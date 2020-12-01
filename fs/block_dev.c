@@ -215,7 +215,7 @@ static void blkdev_bio_end_io_simple(struct bio *bio)
 
 static ssize_t
 __blkdev_direct_IO_simple(struct kiocb *iocb, struct iov_iter *iter,
-		int nr_pages)
+		int nr_vecs)
 {
 	struct file *file = iocb->ki_filp;
 	struct block_device *bdev = I_BDEV(bdev_file_inode(file));
@@ -230,16 +230,16 @@ __blkdev_direct_IO_simple(struct kiocb *iocb, struct iov_iter *iter,
 	    (bdev_logical_block_size(bdev) - 1))
 		return -EINVAL;
 
-	if (nr_pages <= DIO_INLINE_BIO_VECS)
+	if (nr_vecs <= DIO_INLINE_BIO_VECS)
 		vecs = inline_vecs;
 	else {
-		vecs = kmalloc_array(nr_pages, sizeof(struct bio_vec),
+		vecs = kmalloc_array(nr_vecs, sizeof(struct bio_vec),
 				     GFP_KERNEL);
 		if (!vecs)
 			return -ENOMEM;
 	}
 
-	bio_init(&bio, vecs, nr_pages);
+	bio_init(&bio, vecs, nr_vecs);
 	bio_set_dev(&bio, bdev);
 	bio.bi_iter.bi_sector = pos >> 9;
 	bio.bi_write_hint = iocb->ki_hint;
@@ -350,7 +350,7 @@ static void blkdev_bio_end_io(struct bio *bio)
 }
 
 static ssize_t
-__blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter, int nr_pages)
+__blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter, int nr_vecs)
 {
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = bdev_file_inode(file);
@@ -368,7 +368,7 @@ __blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter, int nr_pages)
 	    (bdev_logical_block_size(bdev) - 1))
 		return -EINVAL;
 
-	bio = bio_alloc_bioset(GFP_KERNEL, nr_pages, &blkdev_dio_pool);
+	bio = bio_alloc_bioset(GFP_KERNEL, nr_vecs, &blkdev_dio_pool);
 
 	dio = container_of(bio, struct blkdev_dio, bio);
 	dio->is_sync = is_sync = is_sync_kiocb(iocb);
@@ -417,8 +417,8 @@ __blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter, int nr_pages)
 		dio->size += bio->bi_iter.bi_size;
 		pos += bio->bi_iter.bi_size;
 
-		nr_pages = iov_iter_npages(iter, BIO_MAX_PAGES);
-		if (!nr_pages) {
+		nr_vecs = bio_iov_iter_nvecs(iter, BIO_MAX_PAGES);
+		if (!nr_vecs) {
 			bool polled = false;
 
 			if (iocb->ki_flags & IOCB_HIPRI) {
@@ -448,7 +448,7 @@ __blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter, int nr_pages)
 		}
 
 		submit_bio(bio);
-		bio = bio_alloc(GFP_KERNEL, nr_pages);
+		bio = bio_alloc(GFP_KERNEL, nr_vecs);
 	}
 
 	if (!is_poll)
@@ -480,15 +480,15 @@ __blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter, int nr_pages)
 static ssize_t
 blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 {
-	int nr_pages;
+	int nr_vecs;
 
-	nr_pages = iov_iter_npages(iter, BIO_MAX_PAGES + 1);
-	if (!nr_pages)
+	nr_vecs = bio_iov_iter_nvecs(iter, BIO_MAX_PAGES + 1);
+	if (!nr_vecs)
 		return 0;
-	if (is_sync_kiocb(iocb) && nr_pages <= BIO_MAX_PAGES)
-		return __blkdev_direct_IO_simple(iocb, iter, nr_pages);
+	if (is_sync_kiocb(iocb) && nr_vecs <= BIO_MAX_PAGES)
+		return __blkdev_direct_IO_simple(iocb, iter, nr_vecs);
 
-	return __blkdev_direct_IO(iocb, iter, min(nr_pages, BIO_MAX_PAGES));
+	return __blkdev_direct_IO(iocb, iter, min(nr_vecs, BIO_MAX_PAGES));
 }
 
 static __init int blkdev_init(void)

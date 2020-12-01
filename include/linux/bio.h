@@ -10,6 +10,7 @@
 #include <linux/ioprio.h>
 /* struct bio, bio_vec and BIO_* flags are defined in blk_types.h */
 #include <linux/blk_types.h>
+#include <linux/uio.h>
 
 #define BIO_DEBUG
 
@@ -818,6 +819,15 @@ static inline void bio_set_polled(struct bio *bio, struct kiocb *kiocb)
 	bio->bi_opf |= REQ_HIPRI;
 	if (!is_sync_kiocb(kiocb))
 		bio->bi_opf |= REQ_NOWAIT;
+}
+
+static inline int bio_iov_iter_nvecs(const struct iov_iter *i, int maxvecs)
+{
+	if (!iov_iter_count(i))
+		return 0;
+	if (iov_iter_is_bvec(i))
+               return min_t(int, maxvecs, i->nr_segs);
+	return iov_iter_npages(i, maxvecs);
 }
 
 #endif /* __LINUX_BIO_H */
