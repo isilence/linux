@@ -18,6 +18,8 @@ struct kvec {
 };
 
 enum iter_type {
+	ITER_BVEC_FLAG_FIXED = 2,
+
 	/* iter types */
 	ITER_IOVEC = 4,
 	ITER_KVEC = 8,
@@ -29,8 +31,9 @@ enum iter_type {
 struct iov_iter {
 	/*
 	 * Bit 0 is the read/write bit, set if we're writing.
-	 * Bit 1 is the BVEC_FLAG_NO_REF bit, set if type is a bvec and
-	 * the caller isn't expecting to drop a page reference when done.
+	 * Bit 1 is the BVEC_FLAG_FIXED bit, set if type is a bvec and the
+	 * caller ensures that page references and memory baking bvec won't
+	 * go away until callees finish with them.
 	 */
 	unsigned int type;
 	size_t iov_offset;
@@ -52,7 +55,7 @@ struct iov_iter {
 
 static inline enum iter_type iov_iter_type(const struct iov_iter *i)
 {
-	return i->type & ~(READ | WRITE);
+	return i->type & ~(READ | WRITE | ITER_BVEC_FLAG_FIXED);
 }
 
 static inline bool iter_is_iovec(const struct iov_iter *i)
@@ -83,6 +86,11 @@ static inline bool iov_iter_is_discard(const struct iov_iter *i)
 static inline unsigned char iov_iter_rw(const struct iov_iter *i)
 {
 	return i->type & (READ | WRITE);
+}
+
+static inline unsigned char iov_iter_bvec_fixed(const struct iov_iter *i)
+{
+	return i->type & ITER_BVEC_FLAG_FIXED;
 }
 
 /*

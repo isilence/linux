@@ -2920,6 +2920,7 @@ static ssize_t io_import_fixed(struct io_kiocb *req, int rw,
 		}
 	}
 
+	iter->type |= ITER_BVEC_FLAG_FIXED;
 	return len;
 }
 
