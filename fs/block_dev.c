@@ -349,6 +349,28 @@ static void blkdev_bio_end_io(struct bio *bio)
 	}
 }
 
+static int bio_iov_fixed_bvec_get_pages(struct bio *bio, struct iov_iter *iter)
+{
+	bio->bi_vcnt = iter->nr_segs;
+	bio->bi_max_vecs = iter->nr_segs;
+	bio->bi_io_vec = (struct bio_vec *)iter->bvec;
+	bio->bi_iter.bi_bvec_done = iter->iov_offset;
+	bio->bi_iter.bi_size = iter->count;
+
+	/*
+	 * In practice groups of pages tend to be accessed/reclaimed/refaulted
+	 * together. To not go over bvec for those who didn't set BIO_WORKINGSET
+	 * approximate it by looking at the first page and inducing it to the
+	 * whole bio
+	 */
+	if (unlikely(PageWorkingset(iter->bvec->bv_page)))
+		bio_set_flag(bio, BIO_WORKINGSET);
+	bio_set_flag(bio, BIO_NO_PAGE_REF);
+
+	iter->count = 0;
+	return 0;
+}
+
 static ssize_t
 __blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter, int nr_vecs)
 {
@@ -368,6 +390,8 @@ __blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter, int nr_vecs)
 	    (bdev_logical_block_size(bdev) - 1))
 		return -EINVAL;
 
+	if (iov_iter_bvec_fixed(iter))
+		nr_vecs = 0;
 	bio = bio_alloc_bioset(GFP_KERNEL, nr_vecs, &blkdev_dio_pool);
 
 	dio = container_of(bio, struct blkdev_dio, bio);
@@ -398,7 +422,11 @@ __blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter, int nr_vecs)
 		bio->bi_end_io = blkdev_bio_end_io;
 		bio->bi_ioprio = iocb->ki_ioprio;
 
-		ret = bio_iov_iter_get_pages(bio, iter);
+		if (iov_iter_is_bvec(iter) && iov_iter_bvec_fixed(iter))
+			ret = bio_iov_fixed_bvec_get_pages(bio, iter);
+		else
+			ret = bio_iov_iter_get_pages(bio, iter);
+
 		if (unlikely(ret)) {
 			bio->bi_status = BLK_STS_IOERR;
 			bio_endio(bio);
