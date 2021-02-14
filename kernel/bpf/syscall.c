@@ -2099,6 +2099,7 @@ static bool is_net_admin_prog_type(enum bpf_prog_type prog_type)
 	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
 	case BPF_PROG_TYPE_CGROUP_SYSCTL:
 	case BPF_PROG_TYPE_SOCK_OPS:
+	case BPF_PROG_TYPE_IOURING:
 	case BPF_PROG_TYPE_EXT: /* extends any prog */
 		return true;
 	case BPF_PROG_TYPE_CGROUP_SKB:
