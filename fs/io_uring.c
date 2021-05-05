@@ -9581,6 +9581,7 @@ static void *io_uring_validate_mmap_request(struct file *file,
 	struct io_ring_ctx *ctx = file->private_data;
 	loff_t offset = pgoff << PAGE_SHIFT;
 	struct page *page;
+	unsigned long cq_idx;
 	void *ptr;
 
 	switch (offset) {
@@ -9592,7 +9593,15 @@ static void *io_uring_validate_mmap_request(struct file *file,
 		ptr = ctx->sq_sqes;
 		break;
 	default:
-		return ERR_PTR(-EINVAL);
+		if (offset < IORING_OFF_CQ_RING_EXTRA)
+			return ERR_PTR(-EINVAL);
+		offset -= IORING_OFF_CQ_RING_EXTRA;
+		if (offset % IORING_STRIDE_CQ_RING)
+			return ERR_PTR(-EINVAL);
+		cq_idx = offset / IORING_STRIDE_CQ_RING;
+		if (cq_idx >= ctx->cq_nr)
+			return ERR_PTR(-EINVAL);
+		ptr = ctx->cqs[cq_idx].rings;
 	}
 
 	page = virt_to_head_page(ptr);
@@ -10008,6 +10017,8 @@ static int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 
 	return 0;
 err:
+	while (ctx->cq_nr > 1)
+		io_mem_free(ctx->cqs[--ctx->cq_nr].rings);
 	io_mem_free(ctx->rings);
 	ctx->rings = NULL;
 	return ret;
