@@ -10866,6 +10866,7 @@ static inline bool io_bpf_should_exit(struct io_kiocb *req)
 
 BTF_ID_LIST(bpf_io_uring_btf_ids)
 BTF_ID(struct, io_uring_sqe)
+BTF_ID(struct, io_uring_cqe)
 
 BPF_CALL_3(bpf_io_uring_submit, struct io_kiocb *,		bpf_req,
 				const struct io_uring_sqe *,	sqe,
@@ -10893,6 +10894,81 @@ const struct bpf_func_proto bpf_io_uring_submit_proto = {
 	.arg3_type = ARG_CONST_SIZE,
 };
 
+BPF_CALL_5(bpf_io_uring_emit_cqe, struct io_kiocb *,		bpf_req,
+				  u32,				cq_idx,
+				  u64,				user_data,
+				  s32,				res,
+				  u32,				flags)
+{
+	struct io_ring_ctx *ctx = bpf_req->ctx;
+	bool submitted;
+
+	if (unlikely(cq_idx >= ctx->cq_nr))
+		return -EINVAL;
+
+	spin_lock(&ctx->completion_lock);
+	submitted = io_fill_cqe_aux(ctx, user_data, res, flags, cq_idx);
+	io_commit_cqring(ctx);
+	spin_unlock(&ctx->completion_lock);
+	io_cqring_ev_posted(ctx);
+	return submitted ? 0 : -ENOMEM;
+}
+
+const struct bpf_func_proto bpf_io_uring_emit_cqe_proto = {
+	.func = bpf_io_uring_emit_cqe,
+	.gpl_only = false,
+	.ret_type = RET_INTEGER,
+	.arg1_type = ARG_PTR_TO_CTX,
+	.arg2_type = ARG_ANYTHING,
+	.arg3_type = ARG_ANYTHING,
+	.arg4_type = ARG_ANYTHING,
+	.arg5_type = ARG_ANYTHING,
+};
+
+BPF_CALL_4(bpf_io_uring_reap_cqe, struct io_kiocb *,		bpf_req,
+				  u32,				cq_idx,
+				  struct io_uring_cqe *,	cqe_out,
+				  u32,				size)
+{
+	struct io_ring_ctx *ctx = bpf_req->ctx;
+	struct io_uring_cqe *cqe;
+	struct io_cqring *cq;
+	struct io_rings *r;
+	unsigned tail, head, mask;
+	int ret = -EINVAL;
+
+	if (unlikely(cq_idx >= ctx->cq_nr))
+		goto err;
+
+	cq = &ctx->cqs[cq_idx];
+	r = cq->rings;
+	tail = READ_ONCE(r->cq.tail);
+	head = smp_load_acquire(&r->cq.head);
+
+	ret = -ENOENT;
+	if (unlikely(tail == head))
+		goto err;
+
+	mask = cq->entries - 1;
+	cqe = &r->cqes[head & mask];
+	memcpy(cqe_out, cqe, sizeof(*cqe_out));
+	WRITE_ONCE(r->cq.head, head + 1);
+	return 0;
+err:
+	memset(cqe_out, 0, sizeof(*cqe_out));
+	return ret;
+}
+
+const struct bpf_func_proto bpf_io_uring_reap_cqe_proto = {
+	.func = bpf_io_uring_reap_cqe,
+	.gpl_only = false,
+	.ret_type = RET_INTEGER,
+	.arg1_type = ARG_PTR_TO_CTX,
+	.arg2_type = ARG_ANYTHING,
+	.arg3_type = ARG_PTR_TO_UNINIT_MEM,
+	.arg4_type = ARG_CONST_SIZE,
+};
+
 static const struct bpf_func_proto *
 io_bpf_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
@@ -10903,6 +10979,10 @@ io_bpf_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_copy_to_user_proto;
 	case BPF_FUNC_io_uring_submit:
 		return &bpf_io_uring_submit_proto;
+	case BPF_FUNC_io_uring_emit_cqe:
+		return &bpf_io_uring_emit_cqe_proto;
+	case BPF_FUNC_io_uring_reap_cqe:
+		return &bpf_io_uring_reap_cqe_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}

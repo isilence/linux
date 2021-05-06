@@ -4796,6 +4796,27 @@ union bpf_attr {
  * 		*sqe*.
  * 	Return
  * 		The number of submitted requests or a negative error if failed.
+ *
+ * long bpf_io_uring_emit_cqe(void *ctx, u32 cq_idx, u64 user_data, s32 res, u32 cflags)
+ * 	Description
+ * 		Posts a CQEs to a completion queue with index *cq_idx* of an
+ *		io_uring instance represented by *ctx*. The CQE content is
+ * 		described by *user_data*, *res* and *cflags*,
+ * 		see struct io_uring_cqe.
+ * 	Return
+ * 		-ENOMEM if the CQE has been dropped on the floor and counted
+ * 		as overflown. 0 in case of success, including backlogging.
+ *
+ * long bpf_io_uring_reap_cqe(void *ctx, u32 cq_idx, struct io_uring_cqe *cqe, u32 size)
+ * 	Description
+ * 		Tries to extract one CQE from a completion queue with index
+ *		*cq_idx* of io_uring instance *ctx* and place it to *cqe*.
+ * 	Return
+ *		0 on success.
+ *
+ *		**-ENOENT** if there is no CQE in the CQ.
+ *
+ *		**-EINVAL** in case of invalid input, e.g. invalid CQ index.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -4969,6 +4990,8 @@ union bpf_attr {
 	FN(sys_close),			\
 	FN(copy_to_user),		\
 	FN(io_uring_submit),		\
+	FN(io_uring_emit_cqe),		\
+	FN(io_uring_reap_cqe),		\
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
