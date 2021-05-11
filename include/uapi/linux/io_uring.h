@@ -17,7 +17,10 @@
 struct io_uring_sqe {
 	__u8	opcode;		/* type of operation for this sqe */
 	__u8	flags;		/* IOSQE_ flags */
-	__u16	ioprio;		/* ioprio for the request */
+	union {
+		__u16	ioprio;		/* ioprio for the request */
+		__u16	futex_op;	/* futex operation */
+	} __attribute__((packed));
 	__s32	fd;		/* file descriptor to do IO on */
 	union {
 		__u64	off;	/* offset into file */
