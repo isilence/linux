@@ -692,9 +692,13 @@ struct io_completion {
 	u32				cflags;
 };
 
+struct io_bpf_ctx {
+};
+
 struct io_bpf {
 	struct file			*file;
 	struct bpf_prog			*prog;
+	struct io_bpf_ctx		u;
 };
 
 struct io_async_connect {
@@ -4566,6 +4570,7 @@ static int io_bpf_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	if (!prog)
 		return -EFAULT;
 	req->bpf.prog = prog;
+	memset(&req->bpf.u, 0, sizeof(req->bpf.u));
 	return 0;
 }
 
@@ -10993,7 +10998,35 @@ static bool io_bpf_is_valid_access(int off, int size,
 				   const struct bpf_prog *prog,
 				   struct bpf_insn_access_aux *info)
 {
+	if (off < 0 || off >= sizeof(struct io_uring_bpf_ctx))
+		return false;
+	if (off % size != 0)
+		return false;
+
+	switch (off) {
+	case offsetof(struct io_uring_bpf_ctx, user_data):
+		if (type != BPF_READ)
+			return false;
+		return size == sizeof_field(struct io_uring_bpf_ctx, user_data);
+	}
 	return false;
+}
+
+static u32 io_bpf_convert_ctx_access(enum bpf_access_type type,
+				     const struct bpf_insn *si,
+				     struct bpf_insn *insn_buf,
+				     struct bpf_prog *prog, u32 *target_size)
+{
+	struct bpf_insn *insn = insn_buf;
+
+	switch (si->off) {
+	case offsetof(struct io_uring_bpf_ctx, user_data):
+		*insn++ = BPF_LDX_MEM(BPF_DW, si->dst_reg, si->src_reg,
+			      bpf_target_off(struct io_kiocb, user_data, 8,
+					     target_size));
+		break;
+	}
+	return insn - insn_buf;
 }
 
 const struct bpf_prog_ops bpf_io_uring_prog_ops = {};
@@ -11001,6 +11034,7 @@ const struct bpf_prog_ops bpf_io_uring_prog_ops = {};
 const struct bpf_verifier_ops bpf_io_uring_verifier_ops = {
 	.get_func_proto			= io_bpf_func_proto,
 	.is_valid_access		= io_bpf_is_valid_access,
+	.convert_ctx_access		= io_bpf_convert_ctx_access,
 };
 
 static void io_bpf_run(struct io_kiocb *req, unsigned int issue_flags)
