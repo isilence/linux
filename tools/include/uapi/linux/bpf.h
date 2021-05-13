@@ -4781,6 +4781,13 @@ union bpf_attr {
  * 		Execute close syscall for given FD.
  * 	Return
  * 		A syscall result.
+ *
+ * long bpf_copy_to_user(void *user_ptr, const void *src, u32 size)
+ * 	Description
+ * 		Read *size* bytes from *src* and store the data in user space
+ * 		address *user_ptr*. This is a wrapper of **copy_to_user**\ ().
+ * 	Return
+ * 		0 on success, or a negative error in case of failure.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -4952,6 +4959,7 @@ union bpf_attr {
 	FN(sys_bpf),			\
 	FN(btf_find_by_name_kind),	\
 	FN(sys_close),			\
+	FN(copy_to_user),		\
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
