@@ -381,11 +381,6 @@ static inline int match_futex(union futex_key *key1, union futex_key *key2)
 		&& key1->both.offset == key2->both.offset);
 }
 
-enum futex_access {
-	FUTEX_READ,
-	FUTEX_WRITE
-};
-
 /**
  * futex_setup_timer - set up the sleeping hrtimer.
  * @time:	ptr to the given timeout value
@@ -482,8 +477,8 @@ static u64 get_inode_sequence_number(struct inode *inode)
  *
  * lock_page() might sleep, the caller should not hold a spinlock.
  */
-static int get_futex_key(u32 __user *uaddr, bool fshared, union futex_key *key,
-			 enum futex_access rw)
+int get_futex_key(u32 __user *uaddr, bool fshared, union futex_key *key,
+		  enum futex_access rw)
 {
 	unsigned long address = (unsigned long)uaddr;
 	struct mm_struct *mm = current->mm;
@@ -1679,6 +1674,66 @@ static int futex_atomic_op_inuser(unsigned int encoded_op, u32 __user *uaddr)
 	default:
 		return -ENOSYS;
 	}
+}
+
+int futex_wake_op1(u32 __user *uaddr, int nr_wake, int op, bool shared,
+		   bool try)
+{
+	union futex_key key;
+	struct futex_hash_bucket *hb;
+	struct futex_q *this, *next;
+	int ret, op_ret;
+	DEFINE_WAKE_Q(wake_q);
+
+retry:
+	ret = get_futex_key(uaddr, shared, &key, FUTEX_READ);
+	if (unlikely(ret != 0))
+		return ret;
+	hb = hash_futex(&key);
+retry_private:
+	spin_lock(&hb->lock);
+	op_ret = futex_atomic_op_inuser(op, uaddr);
+	if (unlikely(op_ret < 0)) {
+		spin_unlock(&hb->lock);
+
+		if (!IS_ENABLED(CONFIG_MMU) ||
+		    unlikely(op_ret != -EFAULT && op_ret != -EAGAIN)) {
+			/*
+			 * we don't get EFAULT from MMU faults if we don't have
+			 * an MMU, but we might get them from range checking
+			 */
+			ret = op_ret;
+			return ret;
+		}
+		if (try)
+			return -EAGAIN;
+
+		if (op_ret == -EFAULT) {
+			ret = fault_in_user_writeable(uaddr);
+			if (ret)
+				return ret;
+		}
+		cond_resched();
+		if (shared)
+			goto retry;
+		goto retry_private;
+	}
+	if (op_ret) {
+		plist_for_each_entry_safe(this, next, &hb->chain, list) {
+			if (match_futex(&this->key, &key)) {
+				if (this->pi_state || this->rt_waiter) {
+					ret = -EINVAL;
+					break;
+				}
+				mark_wake_futex(&wake_q, this);
+				if (++ret >= nr_wake)
+					break;
+			}
+		}
+	}
+	spin_unlock(&hb->lock);
+	wake_up_q(&wake_q);
+	return ret;
 }
 
 /*

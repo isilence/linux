@@ -52,6 +52,11 @@ union futex_key {
 
 #define FUTEX_KEY_INIT (union futex_key) { .both = { .ptr = 0ULL } }
 
+enum futex_access {
+	FUTEX_READ,
+	FUTEX_WRITE
+};
+
 #ifdef CONFIG_FUTEX
 enum {
 	FUTEX_STATE_OK,
@@ -77,6 +82,8 @@ void futex_exec_release(struct task_struct *tsk);
 
 long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 	      u32 __user *uaddr2, u32 val2, u32 val3);
+int futex_wake_op1(u32 __user *uaddr, int nr_wake, int op, bool shared,
+		   bool try);
 #else
 static inline void futex_init_task(struct task_struct *tsk) { }
 static inline void futex_exit_recursive(struct task_struct *tsk) { }
@@ -88,6 +95,12 @@ static inline long do_futex(u32 __user *uaddr, int op, u32 val,
 {
 	return -EINVAL;
 }
+static inline int futex_wake_op1(u32 __user *uaddr, int nr_wake, int op,
+				 bool shared, bool try)
+{
+	return -EINVAL;
+}
+
 #endif
 
 #endif
