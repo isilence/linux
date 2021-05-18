@@ -6190,4 +6190,16 @@ enum {
 	BTF_F_ZERO	=	(1ULL << 3),
 };
 
+/*
+ * Return values for io_uring BPF programs.
+ *    - IORING_BPF_OK: complete the request.
+ *    - IORING_BPF_WAIT: wait on CQ for completions.
+ */
+enum {
+	IORING_BPF_OK = 0,
+	IORING_BPF_WAIT,
+
+	__IORING_BPF_RET_NR,
+};
+
 #endif /* _UAPI__LINUX_BPF_H__ */

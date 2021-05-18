@@ -9166,7 +9166,7 @@ static int check_return_code(struct bpf_verifier_env *env)
 		range = tnum_range(SK_DROP, SK_PASS);
 		break;
 	case BPF_PROG_TYPE_IOURING:
-		range = tnum_const(0);
+		range = tnum_range(IORING_BPF_OK, __IORING_BPF_RET_NR - 1);
 		break;
 	case BPF_PROG_TYPE_EXT:
 		/* freplace program can return anything as its return value

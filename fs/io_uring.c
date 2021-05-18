@@ -693,12 +693,15 @@ struct io_completion {
 };
 
 struct io_bpf_ctx {
+	u32				wait_nr;
+	u32				wait_idx;
 };
 
 struct io_bpf {
 	struct file			*file;
 	struct bpf_prog			*prog;
 	struct io_bpf_ctx		u;
+	struct wait_queue_entry		wqe;
 };
 
 struct io_async_connect {
@@ -9518,6 +9521,7 @@ static void io_uring_try_cancel_requests(struct io_ring_ctx *ctx,
 			}
 		}
 
+		wake_up_all(&ctx->cq_wait);
 		ret |= io_cancel_defer_files(ctx, task, cancel_all);
 		ret |= io_poll_remove_all(ctx, task, cancel_all);
 		ret |= io_kill_timeouts(ctx, task, cancel_all);
@@ -11007,6 +11011,10 @@ static bool io_bpf_is_valid_access(int off, int size,
 		if (type != BPF_READ)
 			return false;
 		return size == sizeof_field(struct io_uring_bpf_ctx, user_data);
+	case offsetof(struct io_uring_bpf_ctx, wait_nr):
+		return size == sizeof_field(struct io_uring_bpf_ctx, wait_nr);
+	case offsetof(struct io_uring_bpf_ctx, wait_idx):
+		return size == sizeof_field(struct io_uring_bpf_ctx, wait_idx);
 	}
 	return false;
 }
@@ -11024,6 +11032,26 @@ static u32 io_bpf_convert_ctx_access(enum bpf_access_type type,
 			      bpf_target_off(struct io_kiocb, user_data, 8,
 					     target_size));
 		break;
+	case offsetof(struct io_uring_bpf_ctx, wait_nr):
+		if (type == BPF_READ)
+			*insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
+				      bpf_target_off(struct io_kiocb, bpf.u.wait_nr,
+						     4, target_size));
+		else
+			*insn++ = BPF_STX_MEM(BPF_W, si->dst_reg, si->src_reg,
+				      bpf_target_off(struct io_kiocb, bpf.u.wait_nr,
+						     4, target_size));
+		break;
+	case offsetof(struct io_uring_bpf_ctx, wait_idx):
+		if (type == BPF_READ)
+			*insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
+				      bpf_target_off(struct io_kiocb, bpf.u.wait_idx,
+						     4, target_size));
+		else
+			*insn++ = BPF_STX_MEM(BPF_W, si->dst_reg, si->src_reg,
+				      bpf_target_off(struct io_kiocb, bpf.u.wait_idx,
+						     4, target_size));
+		break;
 	}
 	return insn - insn_buf;
 }
@@ -11036,6 +11064,72 @@ const struct bpf_verifier_ops bpf_io_uring_verifier_ops = {
 	.convert_ctx_access		= io_bpf_convert_ctx_access,
 };
 
+static inline bool io_bpf_need_wake(struct io_kiocb *req)
+{
+	struct io_bpf_ctx *bpf = &req->bpf.u;
+
+	if (io_bpf_should_exit(req))
+		return true;
+
+	return __io_cqring_events(&req->ctx->cqs[bpf->wait_idx]) >= bpf->wait_nr;
+}
+
+static int io_bpf_wait_func(struct wait_queue_entry *wqe, unsigned mode,
+			       int sync, void *key)
+{
+	struct io_kiocb *req = container_of(wqe, struct io_kiocb, bpf.wqe);
+	bool wake = io_bpf_need_wake(req);
+
+	if (wake) {
+		list_del_init_careful(&wqe->entry);
+		req->io_task_work.func = io_bpf_run_task_work;
+		io_req_task_work_add(req);
+	}
+	return wake;
+}
+
+static void io_bpf_wait_cq_tw(struct io_kiocb *req, bool *locked)
+{
+	struct io_ring_ctx *ctx = req->ctx;
+	struct wait_queue_entry *wqe = &req->bpf.wqe;
+	struct wait_queue_head *wq = &ctx->cq_wait;
+
+	WARN_ON_ONCE(!*locked);
+
+	if (io_bpf_need_wake(req)) {
+		req->io_task_work.func = io_bpf_run_task_work;
+		io_req_task_work_add(req);
+		return;
+	}
+
+	init_waitqueue_func_entry(wqe, io_bpf_wait_func);
+	spin_lock_irq(&wq->lock);
+	__add_wait_queue(wq, wqe);
+	smp_mb();
+	io_bpf_wait_func(wqe, 0, 0, NULL);
+	spin_unlock_irq(&wq->lock);
+}
+
+static int io_bpf_wait_cq(struct io_kiocb *req)
+{
+	if (!req->bpf.u.wait_nr)
+		return -EINVAL;
+	if (unlikely(req->bpf.u.wait_idx >= req->ctx->cq_nr))
+		return -EINVAL;
+
+	/*
+	 * Either the conditions are met, and then just resubmit, or delay in
+	 * hope some other task_work items will generate needed CQEs and we can
+	 * skip going through wait_queue.
+	 */
+	if (io_bpf_need_wake(req))
+		req->io_task_work.func = io_bpf_run_task_work;
+	else
+		req->io_task_work.func = io_bpf_wait_cq_tw;
+	io_req_task_work_add(req);
+	return 0;
+}
+
 static void io_bpf_run(struct io_kiocb *req, unsigned int issue_flags)
 	__must_hold(&req->ctx->uring_lock)
 {
@@ -11047,9 +11141,19 @@ static void io_bpf_run(struct io_kiocb *req, unsigned int issue_flags)
 	if (io_bpf_should_exit(req))
 		goto done;
 	io_submit_state_start(&ctx->submit_state, 1);
-	bpf_prog_run_pin_on_cpu(req->bpf.prog, req);
+	ret = bpf_prog_run_pin_on_cpu(req->bpf.prog, req);
 	io_submit_state_end(&ctx->submit_state, ctx);
-	ret = 0;
+
+	switch (ret) {
+	case IORING_BPF_OK:
+		break;
+	case IORING_BPF_WAIT:
+		ret = io_bpf_wait_cq(req);
+		if (!ret)
+			return;
+		break;
+	}
+
 done:
 	__io_req_complete(req, issue_flags, ret, 0);
 }
@@ -11129,6 +11233,8 @@ static int __init io_uring_init(void)
 		     sizeof(struct io_uring_rsrc_update));
 	BUILD_BUG_ON(sizeof(struct io_uring_rsrc_update) >
 		     sizeof(struct io_uring_rsrc_update2));
+
+	BUILD_BUG_ON(sizeof(struct io_bpf) > 64);
 
 	/* ->buf_index is u16 */
 	BUILD_BUG_ON(IORING_MAX_REG_BUFFERS >= (1u << 16));
