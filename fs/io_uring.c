@@ -7398,7 +7398,7 @@ static int io_wake_function(struct wait_queue_entry *curr, unsigned int mode,
 	 */
 	if (io_should_wake(iowq) || test_bit(0, &iowq->ctx->check_cq_overflow))
 		return autoremove_wake_function(curr, mode, wake_flags, key);
-	return -1;
+	return 0;
 }
 
 static int io_run_task_work_sig(void)
@@ -7487,8 +7487,7 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events,
 			ret = -EBUSY;
 			break;
 		}
-		prepare_to_wait_exclusive(&ctx->cq_wait, &iowq.wq,
-						TASK_INTERRUPTIBLE);
+		prepare_to_wait(&ctx->cq_wait, &iowq.wq, TASK_INTERRUPTIBLE);
 		ret = io_cqring_wait_schedule(ctx, &iowq, &timeout);
 		finish_wait(&ctx->cq_wait, &iowq.wq);
 		cond_resched();
