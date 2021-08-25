@@ -59,7 +59,10 @@ struct io_uring_sqe {
 		__s32	splice_fd_in;
 		__u32	file_index;
 	};
-	__u64	__pad2[2];
+	__u16	cq_idx;
+	__u16	__pad1;
+	__u32	__pad2;
+	__u64	__pad3;
 };
 
 enum {

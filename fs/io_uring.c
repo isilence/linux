@@ -858,6 +858,7 @@ struct io_kiocb {
 	struct task_struct		*task;
 	u64				user_data;
 
+	u16				cq_idx;
 	struct io_kiocb			*link;
 	struct percpu_ref		*fixed_rsrc_refs;
 
@@ -1330,13 +1331,15 @@ static void io_account_cq_overflow(struct io_ring_ctx *ctx)
 
 static bool req_need_defer(struct io_kiocb *req, u32 seq)
 {
-	if (unlikely(req->flags & REQ_F_IO_DRAIN)) {
-		struct io_ring_ctx *ctx = req->ctx;
+	struct io_ring_ctx *ctx = req->ctx;
+	u32 cnt = 0;
+	int i;
 
-		return seq + READ_ONCE(ctx->cq_extra) != ctx->cqs[0].cached_tail;
-	}
-
-	return false;
+	if (!(req->flags & REQ_F_IO_DRAIN))
+		return false;
+	for (i = 0; i < ctx->cq_nr; i++)
+		cnt += ctx->cqs[i].cached_tail;
+	return seq + READ_ONCE(ctx->cq_extra) != cnt;
 }
 
 #define FFS_ASYNC_READ		0x1UL
@@ -1542,10 +1545,14 @@ static void __io_commit_cqring_flush(struct io_ring_ctx *ctx)
 
 static inline void io_commit_cqring(struct io_ring_ctx *ctx)
 {
+	int i;
+
 	if (unlikely(ctx->off_timeout_used || ctx->drain_active))
 		__io_commit_cqring_flush(ctx);
 	/* order cqe stores with ring update */
-	smp_store_release(&ctx->rings->cq.tail, ctx->cqs[0].cached_tail);
+	for (i = 0; i < ctx->cq_nr; i++)
+		smp_store_release(&ctx->cqs[i].rings->cq.tail,
+				  ctx->cqs[i].cached_tail);
 }
 
 static inline bool io_sqring_full(struct io_ring_ctx *ctx)
@@ -1555,16 +1562,15 @@ static inline bool io_sqring_full(struct io_ring_ctx *ctx)
 	return READ_ONCE(r->sq.tail) - ctx->cached_sq_head == ctx->sq_entries;
 }
 
-static inline unsigned int __io_cqring_events(struct io_ring_ctx *ctx)
+static inline unsigned int __io_cqring_events(struct io_cqring *cq)
 {
-	struct io_cqring *cq = &ctx->cqs[0];
-
 	return cq->cached_tail - READ_ONCE(cq->rings->cq.head);
 }
 
-static inline struct io_uring_cqe *io_get_cqe(struct io_ring_ctx *ctx)
+static inline struct io_uring_cqe *io_get_cqe(struct io_ring_ctx *ctx,
+					      unsigned int idx)
 {
-	struct io_cqring *cq = &ctx->cqs[0];
+	struct io_cqring *cq = &ctx->cqs[idx];
 	struct io_rings *rings = cq->rings;
 	unsigned tail, mask = cq->entries - 1;
 
@@ -1573,7 +1579,7 @@ static inline struct io_uring_cqe *io_get_cqe(struct io_ring_ctx *ctx)
 	 * control dependency is enough as we're using WRITE_ONCE to
 	 * fill the cq entry
 	 */
-	if (__io_cqring_events(ctx) == cq->entries)
+	if (__io_cqring_events(cq) == cq->entries)
 		return NULL;
 
 	tail = cq->cached_tail++;
@@ -1636,14 +1642,15 @@ static void io_cqring_ev_posted_iopoll(struct io_ring_ctx *ctx)
 static bool __io_cqring_overflow_flush(struct io_ring_ctx *ctx, bool force)
 {
 	bool all_flushed, posted;
+	struct io_cqring *cq = &ctx->cqs[IO_DEFAULT_CQ];
 
-	if (!force && __io_cqring_events(ctx) == ctx->cqs[0].entries)
+	if (!force && __io_cqring_events(cq) == cq->entries)
 		return false;
 
 	posted = false;
 	spin_lock(&ctx->completion_lock);
 	while (!list_empty(&ctx->cq_overflow_list)) {
-		struct io_uring_cqe *cqe = io_get_cqe(ctx);
+		struct io_uring_cqe *cqe = io_get_cqe(ctx, IO_DEFAULT_CQ);
 		struct io_overflow_cqe *ocqe;
 
 		if (!cqe && !force)
@@ -1725,12 +1732,17 @@ static inline void io_get_task_refs(int nr)
 }
 
 static bool io_cqring_event_overflow(struct io_ring_ctx *ctx, u64 user_data,
-				     long res, unsigned int cflags)
+				     long res, unsigned int cflags,
+				     unsigned int cq_idx)
 {
 	struct io_overflow_cqe *ocqe;
 
+	if (cq_idx != IO_DEFAULT_CQ)
+		goto overflow;
+
 	ocqe = kmalloc(sizeof(*ocqe), GFP_ATOMIC | __GFP_ACCOUNT);
 	if (!ocqe) {
+overflow:
 		/*
 		 * If we're in ring overflow flush mode, or in task cancel mode,
 		 * or cannot allocate an overflow entry, then we need to drop it
@@ -1753,7 +1765,8 @@ static bool io_cqring_event_overflow(struct io_ring_ctx *ctx, u64 user_data,
 }
 
 static inline bool __io_fill_cqe(struct io_ring_ctx *ctx, u64 user_data,
-				 long res, unsigned int cflags)
+				 long res, unsigned int cflags,
+				 unsigned int cq_idx)
 {
 	struct io_uring_cqe *cqe;
 
@@ -1764,28 +1777,29 @@ static inline bool __io_fill_cqe(struct io_ring_ctx *ctx, u64 user_data,
 	 * submission (by quite a lot). Increment the overflow count in
 	 * the ring.
 	 */
-	cqe = io_get_cqe(ctx);
+	cqe = io_get_cqe(ctx, cq_idx);
 	if (likely(cqe)) {
 		WRITE_ONCE(cqe->user_data, user_data);
 		WRITE_ONCE(cqe->res, res);
 		WRITE_ONCE(cqe->flags, cflags);
 		return true;
 	}
-	return io_cqring_event_overflow(ctx, user_data, res, cflags);
+	return io_cqring_event_overflow(ctx, user_data, res, cflags, cq_idx);
 }
 
 static noinline void io_fill_cqe_req(struct io_kiocb *req, long res,
 				     unsigned int cflags)
 {
 	if (!(req->flags & REQ_F_CQE_SKIP))
-		__io_fill_cqe(req->ctx, req->user_data, res, cflags);
+		__io_fill_cqe(req->ctx, req->user_data, res, cflags, req->cq_idx);
 }
 
 static noinline bool io_fill_cqe_aux(struct io_ring_ctx *ctx, u64 user_data,
-				     long res, unsigned int cflags)
+				     long res, unsigned int cflags,
+				     unsigned int cq_idx)
 {
 	ctx->cq_extra++;
-	return __io_fill_cqe(ctx, user_data, res, cflags);
+	return __io_fill_cqe(ctx, user_data, res, cflags, cq_idx);
 }
 
 static void io_req_complete_post(struct io_kiocb *req, long res,
@@ -1794,8 +1808,9 @@ static void io_req_complete_post(struct io_kiocb *req, long res,
 	struct io_ring_ctx *ctx = req->ctx;
 
 	spin_lock(&ctx->completion_lock);
+
 	if (!(req->flags & REQ_F_CQE_SKIP))
-		__io_fill_cqe(ctx, req->user_data, res, cflags);
+		__io_fill_cqe(ctx, req->user_data, res, cflags, req->cq_idx);
 	/*
 	 * If we're the last reference to this request, add to our locked
 	 * free_list cache.
@@ -2344,7 +2359,7 @@ static void __io_submit_flush_completions(struct io_ring_ctx *ctx)
 
 			if (!(req->flags & REQ_F_CQE_SKIP))
 				__io_fill_cqe(ctx, req->user_data, req->result,
-					      req->compl.cflags);
+					      req->compl.cflags, req->cq_idx);
 		}
 		io_commit_cqring(ctx);
 		spin_unlock(&ctx->completion_lock);
@@ -2397,7 +2412,7 @@ static unsigned io_cqring_events(struct io_ring_ctx *ctx)
 {
 	/* See comment at the top of this file */
 	smp_rmb();
-	return __io_cqring_events(ctx);
+	return __io_cqring_events(&ctx->cqs[IO_DEFAULT_CQ]);
 }
 
 static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
@@ -2466,7 +2481,7 @@ static void io_iopoll_complete(struct io_ring_ctx *ctx, unsigned int *nr_events,
 
 		if (!(req->flags & REQ_F_CQE_SKIP))
 			__io_fill_cqe(ctx, req->user_data, req->result,
-				      io_put_rw_kbuf(req));
+				      io_put_rw_kbuf(req), req->cq_idx);
 		(*nr_events)++;
 
 		if (req_ref_put_and_test(req))
@@ -5163,7 +5178,8 @@ static bool __io_poll_complete(struct io_kiocb *req, __poll_t mask)
 		flags = 0;
 	if (!(flags & IORING_CQE_F_MORE)) {
 		io_fill_cqe_req(req, error, flags);
-	} else if (!io_fill_cqe_aux(ctx, req->user_data, error, flags)) {
+	} else if (!io_fill_cqe_aux(ctx, req->user_data, error, flags,
+				    req->cq_idx)) {
 		req->poll.done = true;
 		flags = 0;
 	}
@@ -6855,6 +6871,11 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	req->fixed_rsrc_refs = NULL;
 	req->task = current;
 
+	req->cq_idx = READ_ONCE(sqe->cq_idx);
+	if (unlikely(req->cq_idx >= ctx->cq_nr)) {
+		req->cq_idx = IO_DEFAULT_CQ;
+		return -EINVAL;
+	}
 	/* enforce forwards compatibility on users */
 	if (unlikely(sqe_flags & ~SQE_VALID_FLAGS))
 		return -EINVAL;
@@ -7965,7 +7986,7 @@ static void __io_rsrc_put_work(struct io_rsrc_node *ref_node)
 
 			io_ring_submit_lock(ctx, lock_ring);
 			spin_lock(&ctx->completion_lock);
-			io_fill_cqe_aux(ctx, prsrc->tag, 0, 0);
+			io_fill_cqe_aux(ctx, prsrc->tag, 0, 0, IO_DEFAULT_CQ);
 			io_commit_cqring(ctx);
 			spin_unlock(&ctx->completion_lock);
 			io_cqring_ev_posted(ctx);
@@ -10694,6 +10715,7 @@ static int __init io_uring_init(void)
 	BUILD_BUG_SQE_ELEM(42, __u16,  personality);
 	BUILD_BUG_SQE_ELEM(44, __s32,  splice_fd_in);
 	BUILD_BUG_SQE_ELEM(44, __u32,  file_index);
+	BUILD_BUG_SQE_ELEM(48, __u16,  cq_idx);
 
 	BUILD_BUG_ON(sizeof(struct io_uring_files_update) !=
 		     sizeof(struct io_uring_rsrc_update));
