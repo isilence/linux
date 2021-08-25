@@ -90,6 +90,8 @@
 
 #define IORING_MAX_ENTRIES	32768
 #define IORING_MAX_CQ_ENTRIES	(2 * IORING_MAX_ENTRIES)
+#define IO_DEFAULT_CQ		0
+
 #define IORING_SQPOLL_CAP_ENTRIES_VALUE 8
 
 /* only define max */
@@ -328,6 +330,12 @@ struct io_submit_state {
 	struct list_head	free_list;
 };
 
+struct io_cqring {
+	unsigned		cached_tail;
+	unsigned		entries;
+	struct io_rings		*rings;
+};
+
 struct io_ring_ctx {
 	/* const or read-mostly hot data */
 	struct {
@@ -396,17 +404,15 @@ struct io_ring_ctx {
 
 	unsigned long		check_cq_overflow;
 
-	struct {
-		unsigned		cached_cq_tail;
-		unsigned		cq_entries;
-		struct eventfd_ctx	*cq_ev_fd;
-		struct wait_queue_head	poll_wait;
-		struct wait_queue_head	cq_wait;
-		unsigned		cq_extra;
-		atomic_t		cq_timeouts;
-		struct fasync_struct	*cq_fasync;
-		unsigned		cq_last_tm_flush;
-	} ____cacheline_aligned_in_smp;
+	struct eventfd_ctx	*cq_ev_fd;
+	struct wait_queue_head	poll_wait;
+	struct wait_queue_head	cq_wait;
+	unsigned		cq_extra;
+	atomic_t		cq_timeouts;
+	struct fasync_struct	*cq_fasync;
+	unsigned		cq_last_tm_flush;
+	struct io_cqring	cqs[1];
+	unsigned int		cq_nr;
 
 	struct {
 		spinlock_t		completion_lock;
@@ -1327,7 +1333,7 @@ static bool req_need_defer(struct io_kiocb *req, u32 seq)
 	if (unlikely(req->flags & REQ_F_IO_DRAIN)) {
 		struct io_ring_ctx *ctx = req->ctx;
 
-		return seq + READ_ONCE(ctx->cq_extra) != ctx->cached_cq_tail;
+		return seq + READ_ONCE(ctx->cq_extra) != ctx->cqs[0].cached_tail;
 	}
 
 	return false;
@@ -1496,7 +1502,7 @@ static void io_queue_deferred(struct io_ring_ctx *ctx)
 static void io_flush_timeouts(struct io_ring_ctx *ctx)
 	__must_hold(&ctx->completion_lock)
 {
-	u32 seq = ctx->cached_cq_tail - atomic_read(&ctx->cq_timeouts);
+	u32 seq = ctx->cqs[0].cached_tail - atomic_read(&ctx->cq_timeouts);
 
 	spin_lock_irq(&ctx->timeout_lock);
 	while (!list_empty(&ctx->timeout_list)) {
@@ -1539,7 +1545,7 @@ static inline void io_commit_cqring(struct io_ring_ctx *ctx)
 	if (unlikely(ctx->off_timeout_used || ctx->drain_active))
 		__io_commit_cqring_flush(ctx);
 	/* order cqe stores with ring update */
-	smp_store_release(&ctx->rings->cq.tail, ctx->cached_cq_tail);
+	smp_store_release(&ctx->rings->cq.tail, ctx->cqs[0].cached_tail);
 }
 
 static inline bool io_sqring_full(struct io_ring_ctx *ctx)
@@ -1551,23 +1557,26 @@ static inline bool io_sqring_full(struct io_ring_ctx *ctx)
 
 static inline unsigned int __io_cqring_events(struct io_ring_ctx *ctx)
 {
-	return ctx->cached_cq_tail - READ_ONCE(ctx->rings->cq.head);
+	struct io_cqring *cq = &ctx->cqs[0];
+
+	return cq->cached_tail - READ_ONCE(cq->rings->cq.head);
 }
 
 static inline struct io_uring_cqe *io_get_cqe(struct io_ring_ctx *ctx)
 {
-	struct io_rings *rings = ctx->rings;
-	unsigned tail, mask = ctx->cq_entries - 1;
+	struct io_cqring *cq = &ctx->cqs[0];
+	struct io_rings *rings = cq->rings;
+	unsigned tail, mask = cq->entries - 1;
 
 	/*
 	 * writes to the cq entry need to come after reading head; the
 	 * control dependency is enough as we're using WRITE_ONCE to
 	 * fill the cq entry
 	 */
-	if (__io_cqring_events(ctx) == ctx->cq_entries)
+	if (__io_cqring_events(ctx) == cq->entries)
 		return NULL;
 
-	tail = ctx->cached_cq_tail++;
+	tail = cq->cached_tail++;
 	return &rings->cqes[tail & mask];
 }
 
@@ -1628,7 +1637,7 @@ static bool __io_cqring_overflow_flush(struct io_ring_ctx *ctx, bool force)
 {
 	bool all_flushed, posted;
 
-	if (!force && __io_cqring_events(ctx) == ctx->cq_entries)
+	if (!force && __io_cqring_events(ctx) == ctx->cqs[0].entries)
 		return false;
 
 	posted = false;
@@ -2579,14 +2588,14 @@ static int io_iopoll_check(struct io_ring_ctx *ctx, long min)
 		 * very same mutex.
 		 */
 		if (list_empty(&ctx->iopoll_list)) {
-			u32 tail = ctx->cached_cq_tail;
+			u32 tail = ctx->cqs[0].cached_tail;
 
 			mutex_unlock(&ctx->uring_lock);
 			io_run_task_work();
 			mutex_lock(&ctx->uring_lock);
 
 			/* some requests don't go through iopoll_list */
-			if (tail != ctx->cached_cq_tail ||
+			if (tail != ctx->cqs[0].cached_tail ||
 			    list_empty(&ctx->iopoll_list))
 				break;
 		}
@@ -5990,7 +5999,7 @@ static int io_timeout(struct io_kiocb *req, unsigned int issue_flags)
 		goto add;
 	}
 
-	tail = ctx->cached_cq_tail - atomic_read(&ctx->cq_timeouts);
+	tail = ctx->cqs[0].cached_tail - atomic_read(&ctx->cq_timeouts);
 	req->timeout.target_seq = tail + off;
 
 	/* Update the last seq here in case io_flush_timeouts() hasn't.
@@ -7271,7 +7280,7 @@ struct io_wait_queue {
 static inline bool io_should_wake(struct io_wait_queue *iowq)
 {
 	struct io_ring_ctx *ctx = iowq->ctx;
-	int dist = ctx->cached_cq_tail - (int) iowq->cq_tail;
+	int dist = ctx->cqs[0].cached_tail - (int) iowq->cq_tail;
 
 	/*
 	 * Wake up if we have enough events, or if a timeout occurred since we
@@ -9724,7 +9733,7 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 		if (unlikely(ret))
 			goto out;
 
-		min_complete = min(min_complete, ctx->cq_entries);
+		min_complete = min(min_complete, ctx->cqs[0].entries);
 
 		/*
 		 * When SETUP_IOPOLL and SETUP_SQPOLL are both enabled, user
@@ -9872,10 +9881,6 @@ static int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	struct io_rings *rings;
 	size_t size, sq_array_offset;
 
-	/* make sure these are sane, as we already accounted them */
-	ctx->sq_entries = p->sq_entries;
-	ctx->cq_entries = p->cq_entries;
-
 	size = rings_size(p->sq_entries, p->cq_entries, &sq_array_offset);
 	if (size == SIZE_MAX)
 		return -EOVERFLOW;
@@ -9890,6 +9895,12 @@ static int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	rings->cq_ring_mask = p->cq_entries - 1;
 	rings->sq_ring_entries = p->sq_entries;
 	rings->cq_ring_entries = p->cq_entries;
+
+	/* make sure these are sane, as we already accounted them */
+	ctx->sq_entries = p->sq_entries;
+	ctx->cqs[IO_DEFAULT_CQ].entries = p->cq_entries;
+	ctx->cqs[IO_DEFAULT_CQ].rings = rings;
+	ctx->cq_nr = 1;
 
 	size = array_size(sizeof(struct io_uring_sqe), p->sq_entries);
 	if (size == SIZE_MAX) {
