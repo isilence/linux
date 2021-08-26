@@ -325,6 +325,9 @@ enum {
 	/* set/get max number of workers */
 	IORING_REGISTER_IOWQ_MAX_WORKERS	= 19,
 
+	IORING_REGISTER_BPF			= 20,
+	IORING_UNREGISTER_BPF			= 21,
+
 	/* this goes last */
 	IORING_REGISTER_LAST
 };
