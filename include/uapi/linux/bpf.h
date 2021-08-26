@@ -4788,6 +4788,14 @@ union bpf_attr {
  * 		address *user_ptr*. This is a wrapper of **copy_to_user**\ ().
  * 	Return
  * 		0 on success, or a negative error in case of failure.
+ *
+ * long bpf_io_uring_submit(void *ctx, struct io_uring_sqe *sqe, u32 size)
+ * 	Description
+ * 		Accepts *ctx*, the context of the program representing an
+ * 		io_uring instance, and submits a new request described by
+ * 		*sqe*.
+ * 	Return
+ * 		The number of submitted requests or a negative error if failed.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -4960,6 +4968,7 @@ union bpf_attr {
 	FN(btf_find_by_name_kind),	\
 	FN(sys_close),			\
 	FN(copy_to_user),		\
+	FN(io_uring_submit),		\
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
