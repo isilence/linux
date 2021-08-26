@@ -79,6 +79,7 @@
 #include <linux/pagemap.h>
 #include <linux/io_uring.h>
 #include <linux/tracehook.h>
+#include <linux/bpf.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/io_uring.h>
@@ -104,6 +105,7 @@
 #define IO_RSRC_TAG_TABLE_MAX	(1U << IO_RSRC_TAG_TABLE_SHIFT)
 #define IO_RSRC_TAG_TABLE_MASK	(IO_RSRC_TAG_TABLE_MAX - 1)
 
+#define IORING_MAX_BPF_PROGS	(1U << 14)
 #define IORING_MAX_REG_BUFFERS	(1U << 14)
 
 #define SQE_VALID_FLAGS	(IOSQE_FIXED_FILE|IOSQE_IO_DRAIN|IOSQE_IO_LINK|	\
@@ -274,6 +276,10 @@ struct io_restriction {
 	bool registered;
 };
 
+struct io_bpf_prog {
+	struct bpf_prog *prog;
+};
+
 enum {
 	IO_SQ_THREAD_SHOULD_STOP = 0,
 	IO_SQ_THREAD_SHOULD_PARK,
@@ -383,6 +389,7 @@ struct io_ring_ctx {
 		unsigned		nr_user_bufs;
 		struct io_mapped_ubuf	**user_bufs;
 
+
 		struct io_submit_state	submit_state;
 		struct list_head	timeout_list;
 		struct list_head	ltimeout_list;
@@ -391,6 +398,10 @@ struct io_ring_ctx {
 		struct xarray		personalities;
 		u32			pers_next;
 		unsigned		sq_thread_idle;
+
+		/* bpf programs */
+		unsigned		nr_bpf_progs;
+		struct io_bpf_prog	*bpf_progs;
 	} ____cacheline_aligned_in_smp;
 
 	/* IRQ completion list, under ->completion_lock */
@@ -8985,6 +8996,67 @@ static void io_req_cache_free(struct list_head *list)
 	}
 }
 
+static int io_bpf_unregister(struct io_ring_ctx *ctx)
+{
+	int i;
+
+	if (!ctx->nr_bpf_progs)
+		return -ENXIO;
+
+	for (i = 0; i < ctx->nr_bpf_progs; ++i) {
+		struct bpf_prog *prog = ctx->bpf_progs[i].prog;
+
+		if (prog)
+			bpf_prog_put(prog);
+	}
+	kfree(ctx->bpf_progs);
+	ctx->bpf_progs = NULL;
+	ctx->nr_bpf_progs = 0;
+	return 0;
+}
+
+static int io_bpf_register(struct io_ring_ctx *ctx, void __user *arg,
+			   unsigned int nr_args)
+{
+	u32 __user *fds = arg;
+	int i, ret = 0;
+
+	if (!nr_args || nr_args > IORING_MAX_BPF_PROGS)
+		return -EINVAL;
+	if (ctx->nr_bpf_progs)
+		return -EBUSY;
+
+	ctx->bpf_progs = kcalloc(nr_args, sizeof(ctx->bpf_progs[0]), GFP_KERNEL);
+	if (!ctx->bpf_progs)
+		return -ENOMEM;
+
+	for (i = 0; i < nr_args; ++i) {
+		struct bpf_prog *prog;
+		u32 fd;
+
+		if (copy_from_user(&fd, &fds[i], sizeof(fd))) {
+			ret = -EFAULT;
+			break;
+		}
+		if (fd == -1)
+			continue;
+
+		prog = bpf_prog_get_type(fd, BPF_PROG_TYPE_IOURING);
+		if (IS_ERR(prog)) {
+			ret = PTR_ERR(prog);
+			break;
+		}
+
+		BUG_ON(!prog->aux->sleepable);
+		ctx->bpf_progs[i].prog = prog;
+	}
+
+	ctx->nr_bpf_progs = i;
+	if (ret)
+		io_bpf_unregister(ctx);
+	return ret;
+}
+
 static void io_req_caches_free(struct io_ring_ctx *ctx)
 {
 	struct io_submit_state *state = &ctx->submit_state;
@@ -9053,6 +9125,7 @@ static void io_ring_ctx_free(struct io_ring_ctx *ctx)
 #endif
 	WARN_ON_ONCE(!list_empty(&ctx->ltimeout_list));
 
+	io_bpf_unregister(ctx);
 	io_mem_free(ctx->rings);
 	io_mem_free(ctx->sq_sqes);
 
@@ -10708,6 +10781,15 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			break;
 		ret = io_register_iowq_max_workers(ctx, arg);
 		break;
+	case IORING_REGISTER_BPF:
+		ret = io_bpf_register(ctx, arg, nr_args);
+		break;
+	case IORING_UNREGISTER_BPF:
+		ret = -EINVAL;
+		if (arg || nr_args)
+			break;
+		ret = io_bpf_unregister(ctx);
+		break;
 	default:
 		ret = -EINVAL;
 		break;
@@ -10724,7 +10806,14 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 static const struct bpf_func_proto *
 io_bpf_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
-	return bpf_base_func_proto(func_id);
+	switch (func_id) {
+	case BPF_FUNC_copy_from_user:
+		return &bpf_copy_from_user_proto;
+	case BPF_FUNC_copy_to_user:
+		return &bpf_copy_to_user_proto;
+	default:
+		return bpf_base_func_proto(func_id);
+	}
 }
 
 static bool io_bpf_is_valid_access(int off, int size,
