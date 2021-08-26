@@ -691,6 +691,11 @@ struct io_completion {
 	u32				cflags;
 };
 
+struct io_bpf {
+	struct file			*file;
+	struct bpf_prog			*prog;
+};
+
 struct io_async_connect {
 	struct sockaddr_storage		address;
 };
@@ -853,6 +858,7 @@ struct io_kiocb {
 		struct io_unlink	unlink;
 		/* use only after cleaning per-op data, see io_clean_op() */
 		struct io_completion	compl;
+		struct io_bpf		bpf;
 	};
 
 	/* opcode allocated if it needs to store data for async defer */
@@ -1064,6 +1070,7 @@ static const struct io_op_def io_op_defs[] = {
 	},
 	[IORING_OP_RENAMEAT] = {},
 	[IORING_OP_UNLINKAT] = {},
+	[IORING_OP_BPF] = {},
 };
 
 /* requests with any of those set should undergo io_disarm_next() */
@@ -1098,6 +1105,7 @@ static int io_req_prep_async(struct io_kiocb *req);
 static int io_install_fixed_file(struct io_kiocb *req, struct file *file,
 				 unsigned int issue_flags, u32 slot_index);
 static enum hrtimer_restart io_link_timeout_fn(struct hrtimer *timer);
+static void io_bpf_run(struct io_kiocb *req, unsigned int issue_flags);
 
 static struct kmem_cache *req_cachep;
 
@@ -4536,6 +4544,46 @@ static int io_sync_file_range(struct io_kiocb *req, unsigned int issue_flags)
 	return 0;
 }
 
+static int io_bpf_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
+{
+	struct io_ring_ctx *ctx = req->ctx;
+	struct bpf_prog *prog;
+	unsigned int idx;
+
+	if (unlikely(ctx->flags & (IORING_SETUP_IOPOLL | IORING_SETUP_SQPOLL)))
+		return -EINVAL;
+	if (unlikely(req->flags & (REQ_F_FIXED_FILE | REQ_F_BUFFER_SELECT)))
+		return -EINVAL;
+	if (sqe->ioprio || sqe->len || sqe->cancel_flags || sqe->addr)
+		return -EINVAL;
+
+	idx = READ_ONCE(sqe->off);
+	if (unlikely(idx >= ctx->nr_bpf_progs))
+		return -EFAULT;
+	idx = array_index_nospec(idx, ctx->nr_bpf_progs);
+	prog = ctx->bpf_progs[idx].prog;
+	if (!prog)
+		return -EFAULT;
+	req->bpf.prog = prog;
+	return 0;
+}
+
+static void io_bpf_run_task_work(struct io_kiocb *req, bool *locked)
+{
+	io_tw_lock(req->ctx, locked);
+	if (unlikely(req->task->flags & PF_EXITING))
+		io_req_complete_failed(req, -ECANCELED);
+	else
+		io_bpf_run(req, 0);
+}
+
+static int io_bpf(struct io_kiocb *req, unsigned int issue_flags)
+{
+	req->io_task_work.func = io_bpf_run_task_work;
+	io_req_task_work_add(req);
+	return 0;
+}
+
 #if defined(CONFIG_NET)
 static int io_setup_async_msg(struct io_kiocb *req,
 			      struct io_async_msghdr *kmsg)
@@ -6281,6 +6329,8 @@ static int io_req_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		return io_renameat_prep(req, sqe);
 	case IORING_OP_UNLINKAT:
 		return io_unlinkat_prep(req, sqe);
+	case IORING_OP_BPF:
+		return io_bpf_prep(req, sqe);
 	}
 
 	printk_once(KERN_WARNING "io_uring: unhandled opcode %d\n",
@@ -6576,6 +6626,9 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 		break;
 	case IORING_OP_UNLINKAT:
 		ret = io_unlinkat(req, issue_flags);
+		break;
+	case IORING_OP_BPF:
+		ret = io_bpf(req, issue_flags);
 		break;
 	default:
 		ret = -EINVAL;
@@ -10803,6 +10856,13 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 	return ret;
 }
 
+static inline bool io_bpf_should_exit(struct io_kiocb *req)
+{
+	return unlikely(percpu_ref_is_dying(&req->ctx->refs) ||
+			atomic_read(&req->task->io_uring->in_idle) ||
+			fatal_signal_pending(current));
+}
+
 static const struct bpf_func_proto *
 io_bpf_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
@@ -10830,6 +10890,22 @@ const struct bpf_verifier_ops bpf_io_uring_verifier_ops = {
 	.get_func_proto			= io_bpf_func_proto,
 	.is_valid_access		= io_bpf_is_valid_access,
 };
+
+static void io_bpf_run(struct io_kiocb *req, unsigned int issue_flags)
+	__must_hold(&req->ctx->uring_lock)
+{
+	struct io_ring_ctx *ctx = req->ctx;
+	int ret = -EAGAIN;
+
+	lockdep_assert_held(&ctx->uring_lock);
+
+	if (io_bpf_should_exit(req))
+		goto done;
+	bpf_prog_run_pin_on_cpu(req->bpf.prog, req);
+	ret = 0;
+done:
+	__io_req_complete(req, issue_flags, ret, 0);
+}
 
 SYSCALL_DEFINE4(io_uring_register, unsigned int, fd, unsigned int, opcode,
 		void __user *, arg, unsigned int, nr_args)
