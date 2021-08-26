@@ -80,6 +80,7 @@
 #include <linux/io_uring.h>
 #include <linux/tracehook.h>
 #include <linux/bpf.h>
+#include <linux/btf_ids.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/io_uring.h>
@@ -7086,8 +7087,8 @@ static void io_submit_state_end(struct io_submit_state *state,
 /*
  * Start submission side cache.
  */
-static void io_submit_state_start(struct io_submit_state *state,
-				  unsigned int max_ios)
+static inline void io_submit_state_start(struct io_submit_state *state,
+					 unsigned int max_ios)
 {
 	state->plug_started = false;
 	state->need_plug = max_ios > 2;
@@ -10856,6 +10857,35 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 	return ret;
 }
 
+BTF_ID_LIST(bpf_io_uring_btf_ids)
+BTF_ID(struct, io_uring_sqe)
+
+BPF_CALL_3(bpf_io_uring_submit, struct io_kiocb *,		bpf_req,
+				const struct io_uring_sqe *,	sqe,
+				u32,				size)
+{
+	struct io_ring_ctx *ctx = bpf_req->ctx;
+	struct io_kiocb *req;
+
+	req = io_alloc_req(ctx);
+	if (unlikely(!req))
+		return -ENOMEM;
+
+	percpu_ref_get(&ctx->refs);
+	io_get_task_refs(1);
+	/* returns the number of submitted SQEs or error */
+	return !io_submit_sqe(ctx, req, sqe);
+}
+
+const struct bpf_func_proto bpf_io_uring_submit_proto = {
+	.func = bpf_io_uring_submit,
+	.gpl_only = false,
+	.ret_type = RET_INTEGER,
+	.arg1_type = ARG_PTR_TO_CTX,
+	.arg2_type = ARG_PTR_TO_MEM,
+	.arg3_type = ARG_CONST_SIZE,
+};
+
 static const struct bpf_func_proto *
 io_bpf_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
@@ -10864,6 +10894,8 @@ io_bpf_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_copy_from_user_proto;
 	case BPF_FUNC_copy_to_user:
 		return &bpf_copy_to_user_proto;
+	case BPF_FUNC_io_uring_submit:
+		return &bpf_io_uring_submit_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}
@@ -10896,7 +10928,9 @@ static void io_bpf_run(struct io_kiocb *req, unsigned int issue_flags)
 		     atomic_read(&req->task->io_uring->in_idle)))
 		goto done;
 
+	io_submit_state_start(&ctx->submit_state, 1);
 	bpf_prog_run_pin_on_cpu(req->bpf.prog, req);
+	io_submit_state_end(&ctx->submit_state, ctx);
 	ret = 0;
 done:
 	__io_req_complete(req, issue_flags, ret, 0);
