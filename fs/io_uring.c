@@ -7111,17 +7111,23 @@ fail_req:
 	return 0;
 }
 
-/*
- * Batched submission is done, ensure local IO is flushed out.
- */
-static void io_submit_state_end(struct io_submit_state *state,
-				struct io_ring_ctx *ctx)
+static inline void __io_submit_state_end(struct io_submit_state *state,
+					 struct io_ring_ctx *ctx)
 {
 	if (state->link.head)
 		io_queue_sqe(state->link.head);
-	io_submit_flush_completions(ctx);
 	if (state->plug_started)
 		blk_finish_plug(&state->plug);
+}
+
+/*
+ * Batched submission is done, ensure local IO is flushed out.
+ */
+static inline void io_submit_state_end(struct io_submit_state *state,
+				       struct io_ring_ctx *ctx)
+{
+	__io_submit_state_end(state, ctx);
+	io_submit_flush_completions(ctx);
 }
 
 /*
@@ -11175,7 +11181,7 @@ static void io_bpf_run(struct io_kiocb *req, unsigned int issue_flags)
 		goto done;
 	io_submit_state_start(&ctx->submit_state, 1);
 	ret = bpf_prog_run_pin_on_cpu(req->bpf.prog, req);
-	io_submit_state_end(&ctx->submit_state, ctx);
+	__io_submit_state_end(&ctx->submit_state, ctx);
 
 	switch (ret) {
 	case IORING_BPF_OK:
