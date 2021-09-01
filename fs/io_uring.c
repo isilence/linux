@@ -4590,8 +4590,12 @@ static void io_bpf_run_task_work(struct io_kiocb *req, bool *locked)
 
 static int io_bpf(struct io_kiocb *req, unsigned int issue_flags)
 {
-	req->io_task_work.func = io_bpf_run_task_work;
-	io_req_task_work_add(req);
+	if (issue_flags & IO_URING_F_TW) {
+		io_bpf_run(req, issue_flags);
+	} else {
+		req->io_task_work.func = io_bpf_run_task_work;
+		io_req_task_work_add(req);
+	}
 	return 0;
 }
 
