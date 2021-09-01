@@ -496,6 +496,7 @@ struct io_uring_task {
 	struct io_wq_work_list	task_list;
 	struct callback_head	task_work;
 	bool			task_running;
+	struct io_wq_work_list	task_list_local;
 };
 
 /*
@@ -1179,10 +1180,13 @@ static inline void req_ref_get(struct io_kiocb *req)
 	atomic_inc(&req->refs);
 }
 
-static inline void io_submit_flush_completions(struct io_ring_ctx *ctx)
+static inline bool io_submit_flush_completions(struct io_ring_ctx *ctx)
 {
-	if (ctx->submit_state.compl_nr)
+	bool run = ctx->submit_state.compl_nr;
+
+	if (run)
 		__io_submit_flush_completions(ctx);
+	return run;
 }
 
 static inline void __io_req_set_refcount(struct io_kiocb *req, int nr)
@@ -2192,15 +2196,20 @@ static void tctx_task_work(struct callback_head *cb)
 	while (1) {
 		struct io_wq_work_node *node;
 
-		if (!tctx->task_list.first && locked)
-			io_submit_flush_completions(ctx);
-
-		spin_lock_irq(&tctx->task_lock);
-		node = tctx->task_list.first;
-		INIT_WQ_LIST(&tctx->task_list);
-		if (!node)
-			tctx->task_running = false;
-		spin_unlock_irq(&tctx->task_lock);
+		if (tctx->task_list_local.first) {
+			node = tctx->task_list_local.first;
+			INIT_WQ_LIST(&tctx->task_list_local);
+		} else if (!READ_ONCE(tctx->task_list.first) && locked &&
+			   io_submit_flush_completions(ctx)) {
+			continue;
+		} else {
+			spin_lock_irq(&tctx->task_lock);
+			node = tctx->task_list.first;
+			INIT_WQ_LIST(&tctx->task_list);
+			if (!node)
+				WRITE_ONCE(tctx->task_running, false);
+			spin_unlock_irq(&tctx->task_lock);
+		}
 		if (!node)
 			break;
 
@@ -2237,11 +2246,20 @@ static void io_req_task_work_add(struct io_kiocb *req)
 
 	WARN_ON_ONCE(!tctx);
 
+	/*
+	 * If we're already in the context of the task we're going to add our
+	 * request to, use ->task_list_local and avoid extra sync.
+	 */
+	if (current == tsk && !in_irq() && READ_ONCE(tctx->task_running)) {
+		wq_list_add_tail(&req->io_task_work.node, &tctx->task_list_local);
+		return;
+	}
+
 	spin_lock_irqsave(&tctx->task_lock, flags);
 	wq_list_add_tail(&req->io_task_work.node, &tctx->task_list);
 	running = tctx->task_running;
 	if (!running)
-		tctx->task_running = true;
+		WRITE_ONCE(tctx->task_running, true);
 	spin_unlock_irqrestore(&tctx->task_lock, flags);
 
 	/* task_work already pending, we're done */
@@ -2262,7 +2280,7 @@ static void io_req_task_work_add(struct io_kiocb *req)
 	}
 
 	spin_lock_irqsave(&tctx->task_lock, flags);
-	tctx->task_running = false;
+	WRITE_ONCE(tctx->task_running, false);
 	node = tctx->task_list.first;
 	INIT_WQ_LIST(&tctx->task_list);
 	spin_unlock_irqrestore(&tctx->task_lock, flags);
@@ -8426,6 +8444,7 @@ static int io_uring_alloc_task_context(struct task_struct *task,
 	task->io_uring = tctx;
 	spin_lock_init(&tctx->task_lock);
 	INIT_WQ_LIST(&tctx->task_list);
+	INIT_WQ_LIST(&tctx->task_list_local);
 	init_task_work(&tctx->task_work, tctx_task_work);
 	return 0;
 }
