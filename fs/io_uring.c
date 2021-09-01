@@ -204,6 +204,7 @@ struct io_rings {
 enum io_uring_cmd_flags {
 	IO_URING_F_NONBLOCK		= 1,
 	IO_URING_F_COMPLETE_DEFER	= 2,
+	IO_URING_F_TW			= 4,
 };
 
 struct io_mapped_ubuf {
@@ -1103,7 +1104,7 @@ static int __io_register_rsrc_update(struct io_ring_ctx *ctx, unsigned type,
 static void io_clean_op(struct io_kiocb *req);
 static struct file *io_file_get(struct io_ring_ctx *ctx,
 				struct io_kiocb *req, int fd, bool fixed);
-static void __io_queue_sqe(struct io_kiocb *req);
+static void __io_queue_sqe(struct io_kiocb *req, unsigned int issue_flags);
 static void io_rsrc_put_work(struct work_struct *work);
 
 static void io_req_task_queue(struct io_kiocb *req);
@@ -2291,7 +2292,8 @@ static void io_req_task_submit(struct io_kiocb *req, bool *locked)
 	io_tw_lock(ctx, locked);
 	/* req->task == current here, checking PF_EXITING is safe */
 	if (likely(!(req->task->flags & PF_EXITING)))
-		__io_queue_sqe(req);
+		__io_queue_sqe(req, IO_URING_F_NONBLOCK |
+				    IO_URING_F_COMPLETE_DEFER | IO_URING_F_TW);
 	else
 		io_req_complete_failed(req, -EFAULT);
 }
@@ -6835,14 +6837,14 @@ static void io_queue_linked_timeout(struct io_kiocb *req)
 	io_put_req(req);
 }
 
-static void __io_queue_sqe(struct io_kiocb *req)
+static void __io_queue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 	__must_hold(&req->ctx->uring_lock)
 {
 	struct io_kiocb *linked_timeout;
 	int ret;
 
 issue_sqe:
-	ret = io_issue_sqe(req, IO_URING_F_NONBLOCK|IO_URING_F_COMPLETE_DEFER);
+	ret = io_issue_sqe(req, issue_flags);
 
 	/*
 	 * We async punt it if the file wasn't marked NOWAIT, or if the file
@@ -6893,7 +6895,7 @@ static inline void io_queue_sqe(struct io_kiocb *req)
 		return;
 
 	if (likely(!(req->flags & (REQ_F_FORCE_ASYNC | REQ_F_FAIL)))) {
-		__io_queue_sqe(req);
+		__io_queue_sqe(req, IO_URING_F_NONBLOCK|IO_URING_F_COMPLETE_DEFER);
 	} else if (req->flags & REQ_F_FAIL) {
 		io_req_complete_fail_submit(req);
 	} else {
