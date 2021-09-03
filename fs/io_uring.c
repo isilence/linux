@@ -1632,6 +1632,12 @@ static inline bool io_should_trigger_evfd(struct io_ring_ctx *ctx)
 	return !ctx->eventfd_async || io_wq_current_is_worker();
 }
 
+#ifdef __x86_64__
+#define smp_mb__after_spinunlock()	do { } while (0)
+#else
+#define smp_mb__after_spinunlock()	smp_mb();
+#endif
+
 /*
  * This should only get called when at least one event has been posted.
  * Some applications rely on the eventfd notification count only changing
@@ -1641,12 +1647,14 @@ static inline bool io_should_trigger_evfd(struct io_ring_ctx *ctx)
  */
 static void io_cqring_ev_posted(struct io_ring_ctx *ctx)
 {
+	smp_mb__after_spinunlock();
+
 	/*
 	 * wake_up_all() may seem excessive, but io_wake_function() and
 	 * io_should_wake() handle the termination of the loop and only
 	 * wake as many waiters as we need to.
 	 */
-	if (wq_has_sleeper(&ctx->cq_wait))
+	if (waitqueue_active(&ctx->cq_wait))
 		wake_up_all(&ctx->cq_wait);
 	if (ctx->sq_data && waitqueue_active(&ctx->sq_data->wait))
 		wake_up(&ctx->sq_data->wait);
