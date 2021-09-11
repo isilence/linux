@@ -317,6 +317,7 @@ struct io_submit_state {
 
 	bool			plug_started;
 	bool			need_plug;
+	bool			flush_cqes;
 
 	/*
 	 * Batch completion logic
@@ -1829,6 +1830,8 @@ static void io_req_complete_state(struct io_kiocb *req, long res,
 	req->result = res;
 	req->compl.cflags = cflags;
 	req->flags |= REQ_F_COMPLETE_INLINE;
+	if (!(req->flags & REQ_F_CQE_SKIP))
+		req->ctx->submit_state.flush_cqes = true;
 }
 
 static inline void __io_req_complete(struct io_kiocb *req, unsigned issue_flags,
@@ -2325,17 +2328,20 @@ static void __io_submit_flush_completions(struct io_ring_ctx *ctx)
 	int i, nr = state->compl_nr;
 	struct req_batch rb;
 
-	spin_lock(&ctx->completion_lock);
-	for (i = 0; i < nr; i++) {
-		struct io_kiocb *req = state->compl_reqs[i];
+	if (state->flush_cqes) {
+		spin_lock(&ctx->completion_lock);
+		for (i = 0; i < nr; i++) {
+			struct io_kiocb *req = state->compl_reqs[i];
 
-		if (!(req->flags & REQ_F_CQE_SKIP))
-			__io_fill_cqe(ctx, req->user_data, req->result,
-				      req->compl.cflags);
+			if (!(req->flags & REQ_F_CQE_SKIP))
+				__io_fill_cqe(ctx, req->user_data, req->result,
+					      req->compl.cflags);
+		}
+		io_commit_cqring(ctx);
+		spin_unlock(&ctx->completion_lock);
+		io_cqring_ev_posted(ctx);
+		state->flush_cqes = false;
 	}
-	io_commit_cqring(ctx);
-	spin_unlock(&ctx->completion_lock);
-	io_cqring_ev_posted(ctx);
 
 	io_init_req_batch(&rb);
 	for (i = 0; i < nr; i++) {
