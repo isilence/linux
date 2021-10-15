@@ -734,9 +734,14 @@ void blk_mq_end_request_batch(struct io_comp_batch *ib);
  * Only need start/end time stamping if we have iostat or
  * blk stats enabled, or using an IO scheduler.
  */
+static inline bool __blk_mq_need_time_stamp(unsigned int rq_flags)
+{
+	return rq_flags & (RQF_IO_STAT | RQF_STATS | RQF_ELV);
+}
+
 static inline bool blk_mq_need_time_stamp(struct request *rq)
 {
-	return (rq->rq_flags & (RQF_IO_STAT | RQF_STATS | RQF_ELV));
+	return __blk_mq_need_time_stamp(rq->rq_flags);
 }
 
 /*
