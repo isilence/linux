@@ -371,19 +371,19 @@ static ssize_t __blkdev_direct_IO_async(struct kiocb *iocb,
 		task_io_account_write(bio->bi_iter.bi_size);
 	}
 
-	if (iocb->ki_flags & IOCB_NOWAIT)
-		bio->bi_opf |= REQ_NOWAIT;
 	/*
 	 * Don't plug for HIPRI/polled IO, as those should go straight
 	 * to issue
 	 */
 	if (iocb->ki_flags & IOCB_HIPRI) {
-		bio_set_polled(bio, iocb);
+		bio_set_polled_async(bio, iocb);
 		submit_bio(bio);
 		WRITE_ONCE(iocb->private, bio);
 	} else {
 		struct blk_plug plug;
 
+		if (iocb->ki_flags & IOCB_NOWAIT)
+			bio->bi_opf |= REQ_NOWAIT;
 		blk_start_plug(&plug);
 		submit_bio(bio);
 		blk_finish_plug(&plug);
