@@ -2454,12 +2454,10 @@ static inline unsigned short blk_plug_max_rq_count(struct blk_plug *plug)
 void blk_mq_submit_bio(struct bio *bio)
 {
 	struct request_queue *q = bdev_get_queue(bio->bi_bdev);
-	const int is_sync = op_is_sync(bio->bi_opf);
-	const int is_flush_fua = op_is_flush(bio->bi_opf);
 	struct request *rq;
 	struct blk_plug *plug;
 	struct request *same_queue_rq = NULL;
-	unsigned int nr_segs = 1;
+	unsigned int bi_opf, nr_segs = 1;
 	blk_status_t ret;
 
 	blk_queue_bounce(q, &bio);
@@ -2470,7 +2468,7 @@ void blk_mq_submit_bio(struct bio *bio)
 		goto queue_exit;
 
 	if (!blk_queue_nomerges(q) && bio_mergeable(bio)) {
-		if (!is_flush_fua &&
+		if (!op_is_flush(bio->bi_opf) &&
 		    blk_attempt_plug_merge(q, bio, nr_segs, &same_queue_rq))
 			goto queue_exit;
 		if (blk_mq_sched_bio_merge(q, bio, nr_segs))
@@ -2478,6 +2476,7 @@ void blk_mq_submit_bio(struct bio *bio)
 	}
 
 	rq_qos_throttle(q, bio);
+	bi_opf = bio->bi_opf;
 
 	plug = blk_mq_plug(q, bio);
 	if (plug && plug->cached_rq) {
@@ -2487,7 +2486,7 @@ void blk_mq_submit_bio(struct bio *bio)
 		struct blk_mq_alloc_data data = {
 			.q		= q,
 			.nr_tags	= 1,
-			.cmd_flags	= bio->bi_opf,
+			.cmd_flags	= bi_opf,
 		};
 
 		if (plug) {
@@ -2498,7 +2497,7 @@ void blk_mq_submit_bio(struct bio *bio)
 		rq = __blk_mq_alloc_requests(&data);
 		if (unlikely(!rq)) {
 			rq_qos_cleanup(q, bio);
-			if (bio->bi_opf & REQ_NOWAIT)
+			if (bi_opf & REQ_NOWAIT)
 				bio_wouldblock_error(bio);
 			goto queue_exit;
 		}
@@ -2518,7 +2517,7 @@ void blk_mq_submit_bio(struct bio *bio)
 		return;
 	}
 
-	if (unlikely(is_flush_fua)) {
+	if (unlikely(op_is_flush(bi_opf))) {
 		struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
 		/* Bypass scheduler for flush requests */
 		blk_insert_flush(rq);
@@ -2573,7 +2572,7 @@ void blk_mq_submit_bio(struct bio *bio)
 			blk_mq_try_issue_directly(same_queue_rq->mq_hctx,
 						  same_queue_rq);
 		}
-	} else if ((q->nr_hw_queues > 1 && is_sync) ||
+	} else if ((q->nr_hw_queues > 1 && op_is_sync(bi_opf)) ||
 		   !rq->mq_hctx->dispatch_busy) {
 		/*
 		 * There is no scheduler and we can try to send directly
