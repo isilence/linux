@@ -5759,7 +5759,7 @@ static int io_send(struct io_kiocb *req, unsigned int issue_flags)
 	return 0;
 }
 
-#define IO_SENDZC_VALID_FLAGS IORING_SENDZC_FIXED_BUF
+#define IO_SENDZC_VALID_FLAGS (IORING_SENDZC_FIXED_BUF|IORING_SENDZC_FLUSH)
 
 static int io_sendzc_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
@@ -5863,7 +5863,10 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 	msg.msg_ubuf = &notif->uarg;
 	ret = sock_sendmsg(sock, &msg);
 
-	if (unlikely(ret < min_ret)) {
+	if (likely(ret >= min_ret)) {
+		if (req->msgzc.zc_flags & IORING_SENDZC_FLUSH)
+			io_notif_slot_flush_submit(notif_slot, 0);
+	} else {
 		if (ret == -EAGAIN && (issue_flags & IO_URING_F_NONBLOCK))
 			return -EAGAIN;
 		if (ret == -ERESTARTSYS)
