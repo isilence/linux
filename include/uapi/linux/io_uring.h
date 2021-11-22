@@ -370,6 +370,9 @@ enum {
 	IORING_REGISTER_RING_FDS		= 20,
 	IORING_UNREGISTER_RING_FDS		= 21,
 
+	IORING_REGISTER_NOTIFIERS		= 22,
+	IORING_UNREGISTER_NOTIFIERS		= 23,
+
 	/* this goes last */
 	IORING_REGISTER_LAST
 };
@@ -408,6 +411,18 @@ struct io_uring_rsrc_update2 {
 	__aligned_u64 tags;
 	__u32 nr;
 	__u32 resv2;
+};
+
+struct io_uring_notification_slot {
+	__u64 tag;
+};
+
+struct io_uring_notification_register {
+	__u32 nr_slots;
+	__u32 resv;
+	__u64 resv2;
+	__u64 data;
+	__u64 resv3;
 };
 
 /* Skip updating fd indexes set to this value in the fd table */
