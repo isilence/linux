@@ -5412,6 +5412,8 @@ static int io_send(struct io_kiocb *req, unsigned int issue_flags)
 	msg.msg_control = NULL;
 	msg.msg_controllen = 0;
 	msg.msg_namelen = 0;
+	msg.msg_ubuf = NULL;
+	msg.msg_managed_data = false;
 
 	flags = sr->msg_flags;
 	if (issue_flags & IO_URING_F_NONBLOCK)
@@ -5676,6 +5678,8 @@ static int io_recv(struct io_kiocb *req, unsigned int issue_flags)
 	msg.msg_namelen = 0;
 	msg.msg_iocb = NULL;
 	msg.msg_flags = 0;
+	msg.msg_ubuf = NULL;
+	msg.msg_managed_data = false;
 
 	flags = sr->msg_flags;
 	if (force_nonblock)

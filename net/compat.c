@@ -80,6 +80,8 @@ int __get_compat_msghdr(struct msghdr *kmsg,
 		return -EMSGSIZE;
 
 	kmsg->msg_iocb = NULL;
+	kmsg->msg_ubuf = NULL;
+	kmsg->msg_managed_data = false;
 	*ptr = msg.msg_iov;
 	*len = msg.msg_iovlen;
 	return 0;

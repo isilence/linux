@@ -66,9 +66,16 @@ struct msghdr {
 	};
 	bool		msg_control_is_user : 1;
 	bool		msg_get_inq : 1;/* return INQ after receive */
+	/*
+	 * The data pages are pinned and won't be released before ->msg_ubuf
+	 * is released. ->msg_iter should point to a bvec and ->msg_ubuf has
+	 * to be non-NULL.
+	 */
+	bool		msg_managed_data : 1;
 	unsigned int	msg_flags;	/* flags on received message */
 	__kernel_size_t	msg_controllen;	/* ancillary data buffer length */
 	struct kiocb	*msg_iocb;	/* ptr to iocb for async requests */
+	struct ubuf_info *msg_ubuf;
 };
 
 struct user_msghdr {
