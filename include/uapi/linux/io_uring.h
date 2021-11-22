@@ -239,6 +239,13 @@ enum {
 };
 
 /*
+ * IORING_OP_SENDZC flags
+ */
+enum {
+	IORING_SENDZC_FIXED_BUF		= (1U << 0),
+};
+
+/*
  * IO completion data structure (Completion Queue Entry)
  */
 struct io_uring_cqe {

@@ -700,6 +700,7 @@ struct io_sendzc {
 	size_t				len;
 	u16				slot_idx;
 	int				msg_flags;
+	unsigned			zc_flags;
 	int				addr_len;
 	void __user			*addr;
 };
@@ -5758,11 +5759,14 @@ static int io_send(struct io_kiocb *req, unsigned int issue_flags)
 	return 0;
 }
 
+#define IO_SENDZC_VALID_FLAGS IORING_SENDZC_FIXED_BUF
+
 static int io_sendzc_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
 	struct io_sendzc *zc = &req->msgzc;
+	struct io_ring_ctx *ctx = req->ctx;
 
-	if (READ_ONCE(sqe->ioprio) || READ_ONCE(sqe->__pad2[0]))
+	if (READ_ONCE(sqe->__pad2[0]))
 		return -EINVAL;
 
 	zc->buf = u64_to_user_ptr(READ_ONCE(sqe->addr));
@@ -5773,6 +5777,20 @@ static int io_sendzc_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		req->flags |= REQ_F_NOWAIT;
 	zc->addr = u64_to_user_ptr(READ_ONCE(sqe->addr2));
 	zc->addr_len = READ_ONCE(sqe->addr_len);
+
+	zc->zc_flags = READ_ONCE(sqe->ioprio);
+	if (req->msgzc.zc_flags & ~IO_SENDZC_VALID_FLAGS)
+		return -EINVAL;
+
+	if (req->msgzc.zc_flags & IORING_SENDZC_FIXED_BUF) {
+		unsigned idx = READ_ONCE(sqe->buf_index);
+
+		if (unlikely(idx >= ctx->nr_user_bufs))
+			return -EFAULT;
+		idx = array_index_nospec(idx, ctx->nr_user_bufs);
+		req->imu = READ_ONCE(ctx->user_bufs[idx]);
+		io_req_set_rsrc_node(req, ctx, 0);
+	}
 
 #ifdef CONFIG_COMPAT
 	if (req->ctx->compat)
@@ -5811,12 +5829,21 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 	msg.msg_control = NULL;
 	msg.msg_controllen = 0;
 	msg.msg_namelen = 0;
-	msg.msg_managed_data = 0;
+	msg.msg_managed_data = 1;
 
-	ret = import_single_range(WRITE, zc->buf, zc->len, &iov, &msg.msg_iter);
-	if (unlikely(ret))
-		return ret;
-	mm_account_pinned_pages(&notif->uarg.mmp, zc->len);
+	if (req->msgzc.zc_flags & IORING_SENDZC_FIXED_BUF) {
+		ret = __io_import_fixed(WRITE, &msg.msg_iter, req->imu,
+					(u64)zc->buf, zc->len);
+		if (unlikely(ret))
+				return ret;
+	} else {
+		msg.msg_managed_data = 0;
+		ret = import_single_range(WRITE, zc->buf, zc->len, &iov,
+					  &msg.msg_iter);
+		if (unlikely(ret))
+			return ret;
+		mm_account_pinned_pages(&notif->uarg.mmp, zc->len);
+	}
 
 	if (zc->addr) {
 		ret = move_addr_to_kernel(zc->addr, zc->addr_len, &address);
