@@ -631,7 +631,6 @@ static int __zerocopy_sg_from_bvec(struct sock *sk, struct sk_buff *skb,
 
 		copied += v.bv_len;
 		truesize += PAGE_ALIGN(v.bv_len + v.bv_offset);
-		get_page(v.bv_page);
 		skb_fill_page_desc(skb, frag++, v.bv_page, v.bv_offset, v.bv_len);
 		bvec_iter_advance_single(from->bvec, &bi, v.bv_len);
 	}
@@ -660,10 +659,12 @@ static int __zerocopy_sg_from_bvec(struct sock *sk, struct sk_buff *skb,
 int __zerocopy_sg_from_iter(struct sock *sk, struct sk_buff *skb,
 			    struct iov_iter *from, size_t length)
 {
-	int frag = skb_shinfo(skb)->nr_frags;
+	int frag;
 
-	if (iov_iter_is_bvec(from))
+	if (skb_zcopy_managed(skb))
 		return __zerocopy_sg_from_bvec(sk, skb, from, length);
+
+	frag = skb_shinfo(skb)->nr_frags;
 
 	while (length && iov_iter_count(from)) {
 		struct page *pages[MAX_SKB_FRAGS];
