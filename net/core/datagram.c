@@ -616,7 +616,8 @@ EXPORT_SYMBOL(skb_copy_datagram_from_iter);
 static int __zerocopy_sg_from_bvec(struct sock *sk, struct sk_buff *skb,
 				   struct iov_iter *from, size_t length)
 {
-	int frag = skb_shinfo(skb)->nr_frags;
+	struct skb_shared_info *shinfo = skb_shinfo(skb);
+	int frag = shinfo->nr_frags;
 	int ret = 0;
 	struct bvec_iter bi;
 	ssize_t copied = 0;
@@ -631,12 +632,14 @@ static int __zerocopy_sg_from_bvec(struct sock *sk, struct sk_buff *skb,
 
 		copied += v.bv_len;
 		truesize += PAGE_ALIGN(v.bv_len + v.bv_offset);
-		skb_fill_page_desc(skb, frag++, v.bv_page, v.bv_offset, v.bv_len);
+		__skb_fill_page_desc_noacc(shinfo, frag++, v.bv_page,
+					   v.bv_offset, v.bv_len);
 		bvec_iter_advance_single(from->bvec, &bi, v.bv_len);
 	}
 	if (bi.bi_size)
 		ret = -EMSGSIZE;
 
+	shinfo->nr_frags = frag;
 	from->bvec += bi.bi_idx;
 	from->nr_segs -= bi.bi_idx;
 	from->count = bi.bi_size;
