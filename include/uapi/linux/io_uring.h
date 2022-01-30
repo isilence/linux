@@ -61,7 +61,7 @@ struct io_uring_sqe {
 		__u32	file_index;
 		struct {
 			__u16	notification_idx;
-			__u16	__pad;
+			__u16	addr_len;
 		} __attribute__((packed));
 	};
 	__u64	__pad2[2];
