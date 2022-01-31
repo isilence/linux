@@ -707,6 +707,7 @@ struct io_rsrc_update {
 	u64				arg;
 	u32				nr_args;
 	u32				offset;
+	unsigned			type;
 };
 
 struct io_fadvise {
@@ -1213,7 +1214,7 @@ static const struct io_op_def io_op_defs[] = {
 	},
 	[IORING_OP_OPENAT] = {},
 	[IORING_OP_CLOSE] = {},
-	[IORING_OP_FILES_UPDATE] = {
+	[IORING_OP_RSRC_UPDATE] = {
 		.audit_skip		= 1,
 		.iopoll			= 1,
 	},
@@ -7322,6 +7323,7 @@ static int io_rsrc_update_prep(struct io_kiocb *req,
 	req->rsrc_update.nr_args = READ_ONCE(sqe->len);
 	if (!req->rsrc_update.nr_args)
 		return -EINVAL;
+	req->rsrc_update.type = READ_ONCE(sqe->ioprio);
 	req->rsrc_update.arg = READ_ONCE(sqe->addr);
 	return 0;
 }
@@ -7348,6 +7350,15 @@ static int io_files_update(struct io_kiocb *req, unsigned int issue_flags)
 		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
+}
+
+static int io_rsrc_update(struct io_kiocb *req, unsigned int issue_flags)
+{
+	switch (req->rsrc_update.type) {
+	case IORING_RSRC_UPDATE_FILES:
+		return io_files_update(req, issue_flags);
+	}
+	return -EINVAL;
 }
 
 static int io_req_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
@@ -7394,7 +7405,7 @@ static int io_req_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		return io_openat_prep(req, sqe);
 	case IORING_OP_CLOSE:
 		return io_close_prep(req, sqe);
-	case IORING_OP_FILES_UPDATE:
+	case IORING_OP_RSRC_UPDATE:
 		return io_rsrc_update_prep(req, sqe);
 	case IORING_OP_STATX:
 		return io_statx_prep(req, sqe);
@@ -7677,8 +7688,8 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 	case IORING_OP_CLOSE:
 		ret = io_close(req, issue_flags);
 		break;
-	case IORING_OP_FILES_UPDATE:
-		ret = io_files_update(req, issue_flags);
+	case IORING_OP_RSRC_UPDATE:
+		ret = io_rsrc_update(req, issue_flags);
 		break;
 	case IORING_OP_STATX:
 		ret = io_statx(req, issue_flags);
