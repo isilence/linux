@@ -244,6 +244,7 @@ enum {
 enum {
 	IORING_SENDZC_FIXED_BUF		= (1U << 0),
 	IORING_SENDZC_FLUSH		= (1U << 1),
+	IORING_SENDZC_OVERRIDE_TAG	= (1U << 2),
 };
 
 /*
