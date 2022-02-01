@@ -1217,6 +1217,7 @@ static const struct io_op_def io_op_defs[] = {
 	[IORING_OP_RSRC_UPDATE] = {
 		.audit_skip		= 1,
 		.iopoll			= 1,
+		.ioprio			= 1,
 	},
 	[IORING_OP_STATX] = {
 		.audit_skip		= 1,
@@ -2616,6 +2617,16 @@ static void io_notif_slot_flush(struct io_notif_slot *slot)
 	/* drop slot's master ref */
 	if (refcount_dec_and_test(&notif->uarg.refcnt))
 		io_notif_complete(notif);
+}
+
+static inline void io_notif_slot_flush_submit(struct io_notif_slot *slot,
+					      unsigned int issue_flags)
+{
+	if (!(issue_flags & IO_URING_F_UNLOCKED)) {
+		slot->notif->task = current;
+		io_get_task_refs(1);
+	}
+	io_notif_slot_flush(slot);
 }
 
 static __cold int io_notif_unregister(struct io_ring_ctx *ctx)
@@ -7328,6 +7339,40 @@ static int io_rsrc_update_prep(struct io_kiocb *req,
 	return 0;
 }
 
+static int io_notif_update(struct io_kiocb *req, unsigned int issue_flags)
+{
+	struct io_ring_ctx *ctx = req->ctx;
+	unsigned len = req->rsrc_update.nr_args;
+	unsigned idx_end, idx = req->rsrc_update.offset;
+	int ret = 0;
+
+	io_ring_submit_lock(ctx, issue_flags);
+	if (unlikely(check_add_overflow(idx, len, &idx_end))) {
+		ret = -EOVERFLOW;
+		goto out;
+	}
+	if (unlikely(idx_end > ctx->nr_notif_slots)) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	for (; idx < idx_end; idx++) {
+		struct io_notif_slot *slot = &ctx->notif_slots[idx];
+
+		if (!slot->notif)
+			continue;
+		if (req->rsrc_update.arg)
+			slot->tag = req->rsrc_update.arg;
+		io_notif_slot_flush_submit(slot, issue_flags);
+	}
+out:
+	io_ring_submit_unlock(ctx, issue_flags);
+	if (ret < 0)
+		req_set_fail(req);
+	__io_req_complete(req, issue_flags, ret, 0);
+	return 0;
+}
+
 static int io_files_update(struct io_kiocb *req, unsigned int issue_flags)
 {
 	struct io_ring_ctx *ctx = req->ctx;
@@ -7357,6 +7402,8 @@ static int io_rsrc_update(struct io_kiocb *req, unsigned int issue_flags)
 	switch (req->rsrc_update.type) {
 	case IORING_RSRC_UPDATE_FILES:
 		return io_files_update(req, issue_flags);
+	case IORING_RSRC_UPDATE_NOTIF:
+		return io_notif_update(req, issue_flags);
 	}
 	return -EINVAL;
 }
