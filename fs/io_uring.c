@@ -359,6 +359,7 @@ struct io_ev_fd {
 };
 
 #define IO_NOTIF_MAX_SLOTS	(1U << 10)
+#define IO_NOTIF_REF_CACHE_NR	64
 
 struct io_notif {
 	struct ubuf_info	uarg;
@@ -369,6 +370,8 @@ struct io_notif {
 	u64			tag;
 	/* see struct io_notif_slot::seq */
 	u32			seq;
+	/* extra uarg->refcnt refs */
+	int			cached_refs;
 	/* hook into ctx->notif_list and ctx->notif_list_locked */
 	struct list_head	cache_node;
 
@@ -2612,12 +2615,28 @@ static struct io_notif *io_alloc_notif(struct io_ring_ctx *ctx,
 
 	notif->seq = slot->seq++;
 	notif->tag = slot->tag;
+	notif->cached_refs = IO_NOTIF_REF_CACHE_NR;
 	/* master ref owned by io_notif_slot, will be dropped on flush */
-	refcount_set(&notif->uarg.refcnt, 1);
+	refcount_set(&notif->uarg.refcnt, IO_NOTIF_REF_CACHE_NR + 1);
 	percpu_ref_get(&ctx->refs);
 	notif->rsrc_node = ctx->rsrc_node;
 	io_charge_rsrc_node(ctx);
 	return notif;
+}
+
+static inline void io_notif_consume_ref(struct io_notif *notif)
+	__must_hold(&ctx->uring_lock)
+{
+	notif->cached_refs--;
+
+	/*
+	 * Issue sends without looking at notif->cached_refs first, so we
+	 * always have to have at least one ref cached
+	 */
+	if (unlikely(!notif->cached_refs)) {
+		refcount_add(IO_NOTIF_REF_CACHE_NR, &notif->uarg.refcnt);
+		notif->cached_refs += IO_NOTIF_REF_CACHE_NR;
+	}
 }
 
 static inline struct io_notif *io_get_notif(struct io_ring_ctx *ctx,
@@ -2642,13 +2661,15 @@ static void io_notif_slot_flush(struct io_notif_slot *slot)
 	__must_hold(&ctx->uring_lock)
 {
 	struct io_notif *notif = slot->notif;
+	int refs = notif->cached_refs + 1;
 
 	slot->notif = NULL;
+	notif->cached_refs = 0;
 
 	if (WARN_ON_ONCE(in_interrupt()))
 		return;
-	/* drop slot's master ref */
-	if (refcount_dec_and_test(&notif->uarg.refcnt))
+	/* drop all cached refs and the slot's master ref */
+	if (refcount_sub_and_test(refs, &notif->uarg.refcnt))
 		io_notif_complete(notif);
 }
 
@@ -5831,6 +5852,7 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 	msg.msg_controllen = 0;
 	msg.msg_namelen = 0;
 	msg.msg_managed_data = 1;
+	msg.msg_ubuf_ref = 1;
 
 	if (req->msgzc.zc_flags & IORING_SENDZC_FIXED_BUF) {
 		ret = __io_import_fixed(WRITE, &msg.msg_iter, req->imu,
@@ -5863,6 +5885,10 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 	msg.msg_flags = msg_flags;
 	msg.msg_ubuf = &notif->uarg;
 	ret = sock_sendmsg(sock, &msg);
+
+	/* check if the send consumed an additional ref */
+	if (likely(!msg.msg_ubuf_ref))
+		io_notif_consume_ref(notif);
 
 	if (likely(ret >= min_ret)) {
 		unsigned zc_flags = req->msgzc.zc_flags;
