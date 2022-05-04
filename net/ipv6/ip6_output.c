@@ -1539,6 +1539,9 @@ emsgsize:
 				paged = true;
 				zc = true;
 				uarg = msg->msg_ubuf;
+				/* we might've been given a free ref */
+				extra_uref = msg->msg_ubuf_ref;
+				msg->msg_ubuf_ref = false;
 			}
 		} else if (sock_flag(sk, SOCK_ZEROCOPY)) {
 			uarg = msg_zerocopy_realloc(sk, length, skb_zcopy(skb));

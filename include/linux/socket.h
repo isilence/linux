@@ -72,6 +72,7 @@ struct msghdr {
 	 * to be non-NULL.
 	 */
 	bool		msg_managed_data : 1;
+	bool		msg_ubuf_ref : 1;
 	unsigned int	msg_flags;	/* flags on received message */
 	__kernel_size_t	msg_controllen;	/* ancillary data buffer length */
 	struct kiocb	*msg_iocb;	/* ptr to iocb for async requests */
