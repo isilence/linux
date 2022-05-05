@@ -356,6 +356,43 @@ struct io_ev_fd {
 	struct rcu_head		rcu;
 };
 
+#define IO_NOTIF_MAX_SLOTS	(1U << 10)
+
+struct io_notif {
+	struct ubuf_info	uarg;
+	struct io_ring_ctx	*ctx;
+
+	/* cqe->user_data, io_notif_slot::tag if not overridden */
+	u64			tag;
+	/* see struct io_notif_slot::seq */
+	u32			seq;
+
+	union {
+		struct callback_head	task_work;
+		struct work_struct	commit_work;
+	};
+};
+
+struct io_notif_slot {
+	/*
+	 * Current/active notifier. A slot holds only one active notifier at a
+	 * time and keeps one reference to it. Flush releases the reference and
+	 * lazily replaces it with a new notifier.
+	 */
+	struct io_notif		*notif;
+
+	/*
+	 * Default ->user_data for this slot notifiers CQEs
+	 */
+	u64			tag;
+	/*
+	 * Notifiers of a slot live in generations, we create a new notifier
+	 * only after flushing the previous one. Track the sequential number
+	 * for all notifiers and copy it into notifiers's cqe->cflags
+	 */
+	u32			seq;
+};
+
 #define BGID_ARRAY	64
 
 struct io_ring_ctx {
@@ -408,6 +445,10 @@ struct io_ring_ctx {
 		unsigned		nr_user_files;
 		unsigned		nr_user_bufs;
 		struct io_mapped_ubuf	**user_bufs;
+		struct io_notif_slot	*notif_slots;
+		unsigned		nr_notif_slots;
+		/* the number of io_notif allocated, including ones in caches */
+		unsigned		nr_notif_allocated;
 
 		struct io_submit_state	submit_state;
 
@@ -2410,6 +2451,121 @@ static __cold void io_free_req(struct io_kiocb *req)
 	wq_list_add_head(&req->comp_list, &ctx->locked_free_list);
 	ctx->locked_free_nr++;
 	spin_unlock(&ctx->completion_lock);
+}
+
+static void __io_notif_complete_tw(struct callback_head *cb)
+{
+	struct io_notif *notif = container_of(cb, struct io_notif, task_work);
+	struct io_ring_ctx *ctx = notif->ctx;
+
+	spin_lock(&ctx->completion_lock);
+	io_fill_cqe_aux(ctx, notif->tag, 0, notif->seq);
+	io_commit_cqring(ctx);
+	spin_unlock(&ctx->completion_lock);
+	io_cqring_ev_posted(ctx);
+
+	percpu_ref_put(&ctx->refs);
+	kfree(notif);
+}
+
+static inline void io_notif_complete(struct io_notif *notif)
+{
+	__io_notif_complete_tw(&notif->task_work);
+}
+
+static void io_notif_complete_wq(struct work_struct *work)
+{
+	struct io_notif *notif = container_of(work, struct io_notif, commit_work);
+
+	io_notif_complete(notif);
+}
+
+static void io_uring_tx_zerocopy_callback(struct sk_buff *skb,
+					  struct ubuf_info *uarg,
+					  bool success)
+{
+	struct io_notif *notif = container_of(uarg, struct io_notif, uarg);
+
+	if (!refcount_dec_and_test(&uarg->refcnt))
+		return;
+	INIT_WORK(&notif->commit_work, io_notif_complete_wq);
+	queue_work(system_unbound_wq, &notif->commit_work);
+}
+
+static struct io_notif *io_alloc_notif(struct io_ring_ctx *ctx,
+				       struct io_notif_slot *slot)
+	__must_hold(&ctx->uring_lock)
+{
+	struct io_notif *notif;
+
+	notif = kzalloc(sizeof(*notif), GFP_ATOMIC | __GFP_ACCOUNT);
+	if (!notif)
+		return NULL;
+
+	notif->seq = slot->seq++;
+	notif->tag = slot->tag;
+	notif->ctx = ctx;
+	notif->uarg.flags = SKBFL_ZEROCOPY_FRAG | SKBFL_DONT_ORPHAN;
+	notif->uarg.callback = io_uring_tx_zerocopy_callback;
+	/* master ref owned by io_notif_slot, will be dropped on flush */
+	refcount_set(&notif->uarg.refcnt, 1);
+	percpu_ref_get(&ctx->refs);
+	return notif;
+}
+
+__attribute__((unused))
+static inline struct io_notif *io_get_notif(struct io_ring_ctx *ctx,
+					    struct io_notif_slot *slot)
+{
+	if (!slot->notif)
+		slot->notif = io_alloc_notif(ctx, slot);
+	return slot->notif;
+}
+
+__attribute__((unused))
+static inline struct io_notif_slot *io_get_notif_slot(struct io_ring_ctx *ctx,
+						      int idx)
+	__must_hold(&ctx->uring_lock)
+{
+	if (idx >= ctx->nr_notif_slots)
+		return NULL;
+	idx = array_index_nospec(idx, ctx->nr_notif_slots);
+	return &ctx->notif_slots[idx];
+}
+
+static void io_notif_slot_flush(struct io_notif_slot *slot)
+	__must_hold(&ctx->uring_lock)
+{
+	struct io_notif *notif = slot->notif;
+
+	slot->notif = NULL;
+
+	if (WARN_ON_ONCE(in_interrupt()))
+		return;
+	/* drop slot's master ref */
+	if (refcount_dec_and_test(&notif->uarg.refcnt))
+		io_notif_complete(notif);
+}
+
+static __cold int io_notif_unregister(struct io_ring_ctx *ctx)
+	__must_hold(&ctx->uring_lock)
+{
+	int i;
+
+	if (!ctx->nr_notif_slots)
+		return -ENXIO;
+
+	for (i = 0; i < ctx->nr_notif_slots; i++) {
+		struct io_notif_slot *slot = &ctx->notif_slots[i];
+
+		if (slot->notif)
+			io_notif_slot_flush(slot);
+	}
+
+	kvfree(ctx->notif_slots);
+	ctx->notif_slots = NULL;
+	ctx->nr_notif_slots = 0;
+	return 0;
 }
 
 static inline void io_remove_next_linked(struct io_kiocb *req)
@@ -10102,6 +10258,7 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	}
 #endif
 	WARN_ON_ONCE(!list_empty(&ctx->ltimeout_list));
+	WARN_ON_ONCE(ctx->notif_slots || ctx->nr_notif_slots);
 
 	io_mem_free(ctx->rings);
 	io_mem_free(ctx->sq_sqes);
@@ -10296,6 +10453,7 @@ static __cold void io_ring_ctx_wait_and_kill(struct io_ring_ctx *ctx)
 		__io_cqring_overflow_flush(ctx, true);
 	xa_for_each(&ctx->personalities, index, creds)
 		io_unregister_personality(ctx, index);
+	io_notif_unregister(ctx);
 	mutex_unlock(&ctx->uring_lock);
 
 	/* failed during ring init, it couldn't have issued any requests */
