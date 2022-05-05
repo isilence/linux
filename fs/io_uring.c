@@ -369,6 +369,8 @@ struct io_notif {
 	/* hook into ctx->notif_list and ctx->notif_list_locked */
 	struct list_head	cache_node;
 
+	/* complete via tw if ->task is non-NULL, fallback to wq otherwise */
+	struct task_struct	*task;
 	union {
 		struct callback_head	task_work;
 		struct work_struct	commit_work;
@@ -2467,6 +2469,11 @@ static void __io_notif_complete_tw(struct callback_head *cb)
 	struct io_notif *notif = container_of(cb, struct io_notif, task_work);
 	struct io_ring_ctx *ctx = notif->ctx;
 
+	if (likely(notif->task)) {
+		io_put_task(notif->task, 1);
+		notif->task = NULL;
+	}
+
 	spin_lock(&ctx->completion_lock);
 	io_fill_cqe_aux(ctx, notif->tag, 0, notif->seq);
 
@@ -2500,6 +2507,14 @@ static void io_uring_tx_zerocopy_callback(struct sk_buff *skb,
 
 	if (!refcount_dec_and_test(&uarg->refcnt))
 		return;
+
+	if (likely(notif->task)) {
+		init_task_work(&notif->task_work, __io_notif_complete_tw);
+		if (likely(!task_work_add(notif->task, &notif->task_work,
+					  TWA_SIGNAL)))
+			return;
+	}
+
 	INIT_WORK(&notif->commit_work, io_notif_complete_wq);
 	queue_work(system_unbound_wq, &notif->commit_work);
 }
@@ -2611,8 +2626,12 @@ static __cold int io_notif_unregister(struct io_ring_ctx *ctx)
 	for (i = 0; i < ctx->nr_notif_slots; i++) {
 		struct io_notif_slot *slot = &ctx->notif_slots[i];
 
-		if (slot->notif)
+		if (slot->notif) {
+			WARN_ON_ONCE(slot->notif->task);
+
+			slot->notif->task = NULL;
 			io_notif_slot_flush(slot);
+		}
 	}
 
 	kvfree(ctx->notif_slots);
