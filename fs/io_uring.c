@@ -363,6 +363,7 @@ struct io_ev_fd {
 struct io_notif {
 	struct ubuf_info	uarg;
 	struct io_ring_ctx	*ctx;
+	struct io_rsrc_node	*rsrc_node;
 
 	/* cqe->user_data, io_notif_slot::tag if not overridden */
 	u64			tag;
@@ -1506,11 +1507,18 @@ static __cold void io_rsrc_refs_drop(struct io_ring_ctx *ctx)
 	}
 }
 
-static void io_rsrc_refs_refill(struct io_ring_ctx *ctx)
+static __cold void io_rsrc_refs_refill(struct io_ring_ctx *ctx)
 	__must_hold(&ctx->uring_lock)
 {
 	ctx->rsrc_cached_refs += IO_RSRC_REF_BATCH;
 	percpu_ref_get_many(&ctx->rsrc_node->refs, IO_RSRC_REF_BATCH);
+}
+
+static inline void io_charge_rsrc_node(struct io_ring_ctx *ctx)
+{
+	ctx->rsrc_cached_refs--;
+	if (unlikely(ctx->rsrc_cached_refs < 0))
+		io_rsrc_refs_refill(ctx);
 }
 
 static inline void io_req_set_rsrc_node(struct io_kiocb *req,
@@ -1522,9 +1530,7 @@ static inline void io_req_set_rsrc_node(struct io_kiocb *req,
 
 		if (!(issue_flags & IO_URING_F_UNLOCKED)) {
 			lockdep_assert_held(&ctx->uring_lock);
-			ctx->rsrc_cached_refs--;
-			if (unlikely(ctx->rsrc_cached_refs < 0))
-				io_rsrc_refs_refill(ctx);
+			io_charge_rsrc_node(ctx);
 		} else {
 			percpu_ref_get(&req->rsrc_node->refs);
 		}
@@ -2489,6 +2495,7 @@ static __cold void io_free_req(struct io_kiocb *req)
 static void __io_notif_complete_tw(struct callback_head *cb)
 {
 	struct io_notif *notif = container_of(cb, struct io_notif, task_work);
+	struct io_rsrc_node *rsrc_node = notif->rsrc_node;
 	struct io_ring_ctx *ctx = notif->ctx;
 	struct mmpin *mmp = &notif->uarg.mmp;
 
@@ -2512,6 +2519,7 @@ static void __io_notif_complete_tw(struct callback_head *cb)
 	spin_unlock(&ctx->completion_lock);
 	io_cqring_ev_posted(ctx);
 
+	io_rsrc_put_node(rsrc_node, 1);
 	percpu_ref_put(&ctx->refs);
 }
 
@@ -2606,6 +2614,8 @@ static struct io_notif *io_alloc_notif(struct io_ring_ctx *ctx,
 	/* master ref owned by io_notif_slot, will be dropped on flush */
 	refcount_set(&notif->uarg.refcnt, 1);
 	percpu_ref_get(&ctx->refs);
+	notif->rsrc_node = ctx->rsrc_node;
+	io_charge_rsrc_node(ctx);
 	return notif;
 }
 
