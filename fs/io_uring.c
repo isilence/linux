@@ -2488,7 +2488,13 @@ static void __io_notif_complete_tw(struct callback_head *cb)
 {
 	struct io_notif *notif = container_of(cb, struct io_notif, task_work);
 	struct io_ring_ctx *ctx = notif->ctx;
+	struct mmpin *mmp = &notif->uarg.mmp;
 
+	if (unlikely(mmp->user)) {
+		atomic_long_sub(mmp->num_pg, &mmp->user->locked_vm);
+		free_uid(mmp->user);
+		mmp->user = NULL;
+	}
 	if (likely(notif->task)) {
 		io_put_task(notif->task, 1);
 		notif->task = NULL;
@@ -5794,6 +5800,7 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 	ret = import_single_range(WRITE, zc->buf, zc->len, &iov, &msg.msg_iter);
 	if (unlikely(ret))
 		return ret;
+	mm_account_pinned_pages(&notif->uarg.mmp, zc->len);
 
 	msg_flags = zc->msg_flags | MSG_ZEROCOPY;
 	if (issue_flags & IO_URING_F_NONBLOCK)
