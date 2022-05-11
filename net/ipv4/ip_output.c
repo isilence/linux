@@ -1240,7 +1240,8 @@ alloc_new_skb:
 			skb_len_add(skb, copy);
 			wmem_alloc_delta += copy;
 		} else {
-			err = skb_zerocopy_iter_dgram(skb, from, copy);
+			err = skb_zerocopy_iter_dgram(skb, from, copy,
+						      &wmem_alloc_delta);
 			if (err < 0)
 				goto error;
 		}

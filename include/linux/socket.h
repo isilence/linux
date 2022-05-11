@@ -73,7 +73,8 @@ struct msghdr {
 	struct kiocb	*msg_iocb;	/* ptr to iocb for async requests */
 	struct ubuf_info *msg_ubuf;
 	int (*sg_from_iter)(struct sock *sk, struct sk_buff *skb,
-			    struct iov_iter *from, size_t length);
+			    struct iov_iter *from, size_t length,
+			    unsigned int *wmem_alloc_delta);
 };
 
 struct user_msghdr {
