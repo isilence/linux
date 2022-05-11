@@ -1659,19 +1659,25 @@ alloc_new_skb:
 				goto error;
 			}
 			if (transhdrlen) {
-				skb = sock_alloc_send_skb(sk, alloclen,
-						(flags & MSG_DONTWAIT), &err);
+				skb = __sock_alloc_send_pskb(sk, alloclen, 0,
+							     (flags & MSG_DONTWAIT),
+							     &err, 0);
+				if (unlikely(!skb))
+					goto error;
+
+				__skb_init_owner_w(skb, sk, &wmem_alloc_delta);
 			} else {
 				skb = NULL;
 				if (refcount_read(&sk->sk_wmem_alloc) + wmem_alloc_delta <=
 				    2 * sk->sk_sndbuf)
 					skb = alloc_skb(alloclen,
 							sk->sk_allocation);
-				if (unlikely(!skb))
+				if (unlikely(!skb)) {
 					err = -ENOBUFS;
+					goto error;
+				}
 			}
-			if (!skb)
-				goto error;
+
 			/*
 			 *	Fill in the control structures
 			 */

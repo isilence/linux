@@ -2378,22 +2378,15 @@ void __sock_wfree(struct sk_buff *skb)
 void skb_set_owner_w(struct sk_buff *skb, struct sock *sk)
 {
 	skb_orphan(skb);
-	skb->sk = sk;
 #ifdef CONFIG_INET
 	if (unlikely(!sk_fullsock(sk))) {
+		skb->sk = sk;
 		skb->destructor = sock_edemux;
 		sock_hold(sk);
 		return;
 	}
 #endif
-	skb->destructor = sock_wfree;
-	skb_set_hash_from_sk(skb, sk);
-	/*
-	 * We used to take a refcount on sk, but following operation
-	 * is enough to guarantee sk_free() wont free this sock until
-	 * all in-flight packets are completed
-	 */
-	refcount_add(skb->truesize, &sk->sk_wmem_alloc);
+	__skb_init_owner_w(skb, sk, NULL);
 }
 EXPORT_SYMBOL(skb_set_owner_w);
 
@@ -2611,12 +2604,10 @@ static long sock_wait_for_wmem(struct sock *sk, long timeo)
 /*
  *	Generic send/receive buffer handlers
  */
-
-struct sk_buff *sock_alloc_send_pskb(struct sock *sk, unsigned long header_len,
-				     unsigned long data_len, int noblock,
-				     int *errcode, int max_page_order)
+struct sk_buff *__sock_alloc_send_pskb(struct sock *sk, unsigned long header_len,
+				       unsigned long data_len, int noblock,
+				       int *errcode, int max_page_order)
 {
-	struct sk_buff *skb;
 	long timeo;
 	int err;
 
@@ -2642,17 +2633,27 @@ struct sk_buff *sock_alloc_send_pskb(struct sock *sk, unsigned long header_len,
 			goto interrupted;
 		timeo = sock_wait_for_wmem(sk, timeo);
 	}
-	skb = alloc_skb_with_frags(header_len, data_len, max_page_order,
-				   errcode, sk->sk_allocation);
-	if (skb)
-		skb_set_owner_w(skb, sk);
-	return skb;
-
+	return alloc_skb_with_frags(header_len, data_len, max_page_order,
+				      errcode, sk->sk_allocation);
 interrupted:
 	err = sock_intr_errno(timeo);
 failure:
 	*errcode = err;
 	return NULL;
+}
+EXPORT_SYMBOL(__sock_alloc_send_pskb);
+
+struct sk_buff *sock_alloc_send_pskb(struct sock *sk, unsigned long header_len,
+				     unsigned long data_len, int noblock,
+				     int *errcode, int max_page_order)
+{
+	struct sk_buff *skb;
+
+	skb = __sock_alloc_send_pskb(sk, header_len, data_len, noblock,
+				     errcode, max_page_order);
+	if (skb)
+		skb_set_owner_w(skb, sk);
+	return skb;
 }
 EXPORT_SYMBOL(sock_alloc_send_pskb);
 

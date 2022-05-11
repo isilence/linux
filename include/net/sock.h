@@ -1823,6 +1823,9 @@ int sock_getsockopt(struct socket *sock, int level, int op,
 		    char __user *optval, int __user *optlen);
 int sock_gettstamp(struct socket *sock, void __user *userstamp,
 		   bool timeval, bool time32);
+struct sk_buff *__sock_alloc_send_pskb(struct sock *sk, unsigned long header_len,
+				       unsigned long data_len, int noblock,
+				       int *errcode, int max_page_order);
 struct sk_buff *sock_alloc_send_pskb(struct sock *sk, unsigned long header_len,
 				     unsigned long data_len, int noblock,
 				     int *errcode, int max_page_order);
@@ -2345,7 +2348,27 @@ static inline void skb_set_hash_from_sk(struct sk_buff *skb, struct sock *sk)
 	}
 }
 
+/* doesn't charge wmem_alloc, only for just allocated skbs with full socks */
+static inline void __skb_init_owner_w(struct sk_buff *skb, struct sock *sk,
+				      unsigned int *wmem_alloc_delta)
+{
+	skb->sk = sk;
+	skb->destructor = sock_wfree;
+	skb_set_hash_from_sk(skb, sk);
+
+	/*
+	 * We used to take a refcount on sk, but following operation
+	 * is enough to guarantee sk_free() wont free this sock until
+	 * all in-flight packets are completed
+	 */
+	if (wmem_alloc_delta)
+		*wmem_alloc_delta += skb->truesize;
+	else
+		refcount_add(skb->truesize, &sk->sk_wmem_alloc);
+}
+
 void skb_set_owner_w(struct sk_buff *skb, struct sock *sk);
+
 
 /*
  *	Queue a received datagram if it will fit. Stream and sequenced
