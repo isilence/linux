@@ -660,7 +660,8 @@ static int __zerocopy_sg_from_bvec(struct sock *sk, struct sk_buff *skb,
 }
 
 int __zerocopy_sg_from_iter(struct sock *sk, struct sk_buff *skb,
-			    struct iov_iter *from, size_t length)
+			    struct iov_iter *from, size_t length,
+			    unsigned int *wmem_alloc_delta)
 {
 	int frag;
 
@@ -692,13 +693,8 @@ int __zerocopy_sg_from_iter(struct sock *sk, struct sk_buff *skb,
 		skb->data_len += copied;
 		skb->len += copied;
 		skb->truesize += truesize;
-		if (sk && sk->sk_type == SOCK_STREAM) {
-			sk_wmem_queued_add(sk, truesize);
-			if (!skb_zcopy_pure(skb))
-				sk_mem_charge(sk, truesize);
-		} else {
-			refcount_add(truesize, &skb->sk->sk_wmem_alloc);
-		}
+		*wmem_alloc_delta += truesize;
+
 		for (refs = 0; copied != 0; start = 0) {
 			int size = min_t(int, copied, PAGE_SIZE - start);
 			struct page *head = compound_head(pages[n]);
@@ -747,13 +743,17 @@ EXPORT_SYMBOL(__zerocopy_sg_from_iter);
  */
 int zerocopy_sg_from_iter(struct sk_buff *skb, struct iov_iter *from)
 {
+	unsigned int wmem_alloc_delta = 0;
 	int copy = min_t(int, skb_headlen(skb), iov_iter_count(from));
+	int ret;
 
 	/* copy up to skb headlen */
 	if (skb_copy_datagram_from_iter(skb, 0, from, copy))
 		return -EFAULT;
 
-	return __zerocopy_sg_from_iter(NULL, skb, from, ~0U);
+	ret = __zerocopy_sg_from_iter(NULL, skb, from, ~0U, &wmem_alloc_delta);
+	refcount_add(wmem_alloc_delta, &skb->sk->sk_wmem_alloc);
+	return ret;
 }
 EXPORT_SYMBOL(zerocopy_sg_from_iter);
 

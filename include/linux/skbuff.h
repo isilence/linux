@@ -1682,12 +1682,15 @@ void msg_zerocopy_callback(struct sk_buff *skb, struct ubuf_info *uarg,
 			   bool success);
 
 int __zerocopy_sg_from_iter(struct sock *sk, struct sk_buff *skb,
-			    struct iov_iter *from, size_t length);
+			    struct iov_iter *from, size_t length,
+			    unsigned int *wmem_alloc_delta);
 
 static inline int skb_zerocopy_iter_dgram(struct sk_buff *skb,
-					  struct msghdr *msg, int len)
+					  struct msghdr *msg, int len,
+					  unsigned int *wmem_alloc_delta)
 {
-	return __zerocopy_sg_from_iter(skb->sk, skb, &msg->msg_iter, len);
+	return __zerocopy_sg_from_iter(skb->sk, skb, &msg->msg_iter, len,
+				       wmem_alloc_delta);
 }
 
 int skb_zerocopy_iter_stream(struct sock *sk, struct sk_buff *skb,

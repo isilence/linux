@@ -1352,8 +1352,11 @@ int skb_zerocopy_iter_stream(struct sock *sk, struct sk_buff *skb,
 			     struct msghdr *msg, int len,
 			     struct ubuf_info *uarg)
 {
+	unsigned int wmem_alloc_delta = 0;
 	struct ubuf_info *orig_uarg = skb_zcopy(skb);
 	int err, orig_len = skb->len;
+
+	WARN_ON_ONCE(sk->sk_type != SOCK_STREAM);
 
 	/* An skb can only point to one uarg. This edge case happens when
 	 * TCP appends to an skb, but zerocopy_realloc triggered a new alloc.
@@ -1361,7 +1364,12 @@ int skb_zerocopy_iter_stream(struct sock *sk, struct sk_buff *skb,
 	if (orig_uarg && uarg != orig_uarg)
 		return -EEXIST;
 
-	err = __zerocopy_sg_from_iter(sk, skb, &msg->msg_iter, len);
+	err = __zerocopy_sg_from_iter(sk, skb, &msg->msg_iter, len,
+				      &wmem_alloc_delta);
+	sk_wmem_queued_add(sk, wmem_alloc_delta);
+	if (!skb_zcopy_pure(skb))
+		sk_mem_charge(sk, wmem_alloc_delta);
+
 	if (err == -EFAULT || (err == -EMSGSIZE && skb->len == orig_len)) {
 		struct sock *save_sk = skb->sk;
 

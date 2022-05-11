@@ -1792,7 +1792,8 @@ alloc_new_skb:
 					skb_zcopy_downgrade_managed(skb);
 			}
 
-			err = skb_zerocopy_iter_dgram(skb, msg, copy);
+			err = skb_zerocopy_iter_dgram(skb, from, copy,
+						      &wmem_alloc_delta);
 			if (err < 0)
 				goto error;
 		}
