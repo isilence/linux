@@ -2480,14 +2480,6 @@ static __cold void io_free_req(struct io_kiocb *req)
 
 static void __io_notif_complete_tw(struct io_kiocb *notif, bool *locked)
 {
-	struct mmpin *mmp = &notif->notif.uarg.mmp;
-
-	if (unlikely(mmp->user)) {
-		atomic_long_sub(mmp->num_pg, &mmp->user->locked_vm);
-		free_uid(mmp->user);
-		mmp->user = NULL;
-	}
-
 	if (*locked) {
 		notif->flags |= REQ_F_COMPLETE_INLINE;
 		io_req_add_compl_list(notif);
@@ -2538,7 +2530,6 @@ static struct io_kiocb *io_alloc_notif(struct io_ring_ctx *ctx,
 	notif->cqe.res = 0;
 
 	uarg = &notif->notif.uarg;
-	uarg->mmp.user = NULL;
 	uarg->flags = SKBFL_ZEROCOPY_FRAG | SKBFL_DONT_ORPHAN;
 	uarg->callback = io_uring_tx_zerocopy_callback;
 	notif->notif.cached_refs = IO_NOTIF_REF_CACHE_NR;
@@ -5790,6 +5781,7 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 		if (unlikely(ret))
 			return ret;
 		mm_account_pinned_pages(&notif->notif.uarg.mmp, zc->len);
+		notif->flags |= REQ_F_NEED_CLEANUP;
 	}
 
 	if (zc->addr) {
@@ -7740,6 +7732,16 @@ static void io_clean_op(struct io_kiocb *req)
 			if (req->statx.filename)
 				putname(req->statx.filename);
 			break;
+		case IORING_OP_NOP: {
+			struct mmpin *mmp = &req->notif.uarg.mmp;
+
+			/* notification, TODO: it's buggy without init */
+			if (!mmp->user)
+				break;
+			atomic_long_sub(mmp->num_pg, &mmp->user->locked_vm);
+			free_uid(mmp->user);
+			break;
+			}
 		}
 	}
 	if ((req->flags & REQ_F_POLLED) && req->apoll) {
