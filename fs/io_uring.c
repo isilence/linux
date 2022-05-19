@@ -362,25 +362,10 @@ struct io_ev_fd {
 #define IO_NOTIF_REF_CACHE_NR	64
 
 struct io_notif {
-	struct ubuf_info	uarg;
-	struct io_ring_ctx	*ctx;
-	struct io_rsrc_node	*rsrc_node;
-
-	/* cqe->user_data, io_notif_slot::tag if not overridden */
-	u64			tag;
-	/* see struct io_notif_slot::seq */
-	u32			seq;
+	struct file			*file;
 	/* extra uarg->refcnt refs */
-	int			cached_refs;
-	/* hook into ctx->notif_list and ctx->notif_list_locked */
-	struct list_head	cache_node;
-
-	/* complete via tw if ->task is non-NULL, fallback to wq otherwise */
-	struct task_struct	*task;
-	union {
-		struct callback_head	task_work;
-		struct work_struct	commit_work;
-	};
+	int				cached_refs;
+	struct ubuf_info		uarg;
 };
 
 struct io_notif_slot {
@@ -389,7 +374,7 @@ struct io_notif_slot {
 	 * time and keeps one reference to it. Flush releases the reference and
 	 * lazily replaces it with a new notifier.
 	 */
-	struct io_notif		*notif;
+	struct io_kiocb		*notif;
 
 	/*
 	 * Default ->user_data for this slot notifiers CQEs
@@ -480,9 +465,6 @@ struct io_ring_ctx {
 	/* IRQ completion list, under ->completion_lock */
 	struct io_wq_work_list	locked_free_list;
 	unsigned int		locked_free_nr;
-	/* struct io_notif cache protected by completion_lock */
-	struct list_head	notif_list_locked;
-	unsigned int		notif_locked_nr;
 
 	const struct cred	*sq_creds;	/* cred used for __io_sq_thread() */
 	struct io_sq_data	*sq_data;	/* if using sq thread polling */
@@ -1015,6 +997,7 @@ struct io_kiocb {
 		struct io_hardlink	hardlink;
 		struct io_msg		msg;
 		struct io_sendzc	msgzc;
+		struct io_notif		notif;
 	};
 
 	u8				opcode;
@@ -1362,6 +1345,7 @@ static int io_close_fixed(struct io_kiocb *req, unsigned int issue_flags);
 static enum hrtimer_restart io_link_timeout_fn(struct hrtimer *timer);
 static void io_eventfd_signal(struct io_ring_ctx *ctx);
 static void io_req_tw_post_queue(struct io_kiocb *req, s32 res, u32 cflags);
+static void io_req_task_work_add(struct io_kiocb *req, bool priority);
 
 static struct kmem_cache *req_cachep;
 
@@ -1765,8 +1749,6 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_WQ_LIST(&ctx->locked_free_list);
 	INIT_DELAYED_WORK(&ctx->fallback_work, io_fallback_req_func);
 	INIT_WQ_LIST(&ctx->submit_state.compl_reqs);
-	INIT_LIST_HEAD(&ctx->notif_list);
-	INIT_LIST_HEAD(&ctx->notif_list_locked);
 	return ctx;
 err:
 	kfree(ctx->dummy_ubuf);
@@ -2496,137 +2478,80 @@ static __cold void io_free_req(struct io_kiocb *req)
 	spin_unlock(&ctx->completion_lock);
 }
 
-static void __io_notif_complete_tw(struct callback_head *cb)
+static void __io_notif_complete_tw(struct io_kiocb *notif, bool *locked)
 {
-	struct io_notif *notif = container_of(cb, struct io_notif, task_work);
-	struct io_rsrc_node *rsrc_node = notif->rsrc_node;
-	struct io_ring_ctx *ctx = notif->ctx;
-	struct mmpin *mmp = &notif->uarg.mmp;
+	struct mmpin *mmp = &notif->notif.uarg.mmp;
 
 	if (unlikely(mmp->user)) {
 		atomic_long_sub(mmp->num_pg, &mmp->user->locked_vm);
 		free_uid(mmp->user);
 		mmp->user = NULL;
 	}
-	if (likely(notif->task)) {
-		io_put_task(notif->task, 1);
-		notif->task = NULL;
+
+	if (*locked) {
+		notif->flags |= REQ_F_COMPLETE_INLINE;
+		io_req_add_compl_list(notif);
+	} else {
+		io_req_complete_post(notif, notif->cqe.res, notif->cqe.flags);
 	}
-
-	spin_lock(&ctx->completion_lock);
-	io_fill_cqe_aux(ctx, notif->tag, 0, notif->seq);
-
-	list_add(&notif->cache_node, &ctx->notif_list_locked);
-	ctx->notif_locked_nr++;
-
-	io_commit_cqring(ctx);
-	spin_unlock(&ctx->completion_lock);
-	io_cqring_ev_posted(ctx);
-
-	io_rsrc_put_node(rsrc_node, 1);
-	percpu_ref_put(&ctx->refs);
 }
 
-static inline void io_notif_complete(struct io_notif *notif)
+static inline void io_notif_complete(struct io_kiocb *notif)
 {
-	__io_notif_complete_tw(&notif->task_work);
-}
+	bool locked = true;
 
-static void io_notif_complete_wq(struct work_struct *work)
-{
-	struct io_notif *notif = container_of(work, struct io_notif, commit_work);
-
-	io_notif_complete(notif);
+	__io_notif_complete_tw(notif, &locked);
 }
 
 static void io_uring_tx_zerocopy_callback(struct sk_buff *skb,
 					  struct ubuf_info *uarg,
 					  bool success)
 {
-	struct io_notif *notif = container_of(uarg, struct io_notif, uarg);
+	struct io_kiocb *notif = container_of(uarg, struct io_kiocb, notif.uarg);
 
 	if (!refcount_dec_and_test(&uarg->refcnt))
 		return;
-
-	if (likely(notif->task)) {
-		init_task_work(&notif->task_work, __io_notif_complete_tw);
-		if (likely(!task_work_add(notif->task, &notif->task_work,
-					  TWA_SIGNAL)))
-			return;
-	}
-
-	INIT_WORK(&notif->commit_work, io_notif_complete_wq);
-	queue_work(system_unbound_wq, &notif->commit_work);
+	notif->io_task_work.func = __io_notif_complete_tw;
+	io_req_task_work_add(notif, false);
 }
 
-static void io_notif_splice_cached(struct io_ring_ctx *ctx)
-	__must_hold(&ctx->uring_lock)
-{
-	spin_lock(&ctx->completion_lock);
-	list_splice_init(&ctx->notif_list_locked, &ctx->notif_list);
-	ctx->notif_locked_nr = 0;
-	spin_unlock(&ctx->completion_lock);
-}
-
-static void io_notif_cache_purge(struct io_ring_ctx *ctx)
-	__must_hold(&ctx->uring_lock)
-{
-	io_notif_splice_cached(ctx);
-
-	while (!list_empty(&ctx->notif_list)) {
-		struct io_notif *notif = list_first_entry(&ctx->notif_list,
-						struct io_notif, cache_node);
-
-		list_del(&notif->cache_node);
-		kfree(notif);
-	}
-}
-
-static inline bool io_notif_has_cached(struct io_ring_ctx *ctx)
-	__must_hold(&ctx->uring_lock)
-{
-	if (likely(!list_empty(&ctx->notif_list)))
-		return true;
-	if (data_race(READ_ONCE(ctx->notif_locked_nr) <= IO_COMPL_BATCH))
-		return false;
-	io_notif_splice_cached(ctx);
-	return !list_empty(&ctx->notif_list);
-}
-
-static struct io_notif *io_alloc_notif(struct io_ring_ctx *ctx,
+static struct io_kiocb *io_alloc_notif(struct io_ring_ctx *ctx,
 				       struct io_notif_slot *slot)
 	__must_hold(&ctx->uring_lock)
 {
-	struct io_notif *notif;
+	struct io_kiocb *notif;
+	struct ubuf_info *uarg;
 
-	if (likely(io_notif_has_cached(ctx))) {
-		notif = list_first_entry(&ctx->notif_list,
-					 struct io_notif, cache_node);
-		list_del(&notif->cache_node);
-	} else {
-		notif = kzalloc(sizeof(*notif), GFP_ATOMIC | __GFP_ACCOUNT);
-		if (!notif)
-			return NULL;
-		/* pre-initialise some fields */
-		notif->ctx = ctx;
-		notif->uarg.flags = SKBFL_ZEROCOPY_FRAG | SKBFL_DONT_ORPHAN;
-		notif->uarg.callback = io_uring_tx_zerocopy_callback;
-	}
+	if (unlikely(!io_alloc_req_refill(ctx)))
+		return NULL;
+	notif = io_alloc_req(ctx);
+	notif->opcode = 0;
+	notif->flags = 0;
+	notif->file = NULL;
+	notif->task = current;
+	io_get_task_refs(1);
+	notif->rsrc_node = NULL;
+	io_req_set_rsrc_node(notif, ctx, 0);
 
-	notif->seq = slot->seq++;
-	notif->tag = slot->tag;
-	notif->cached_refs = IO_NOTIF_REF_CACHE_NR;
+	notif->cqe.user_data = slot->tag;
+	notif->cqe.flags = slot->seq++;
+	notif->cqe.res = 0;
+
+	uarg = &notif->notif.uarg;
+	uarg->mmp.user = NULL;
+	uarg->flags = SKBFL_ZEROCOPY_FRAG | SKBFL_DONT_ORPHAN;
+	uarg->callback = io_uring_tx_zerocopy_callback;
+	notif->notif.cached_refs = IO_NOTIF_REF_CACHE_NR;
 	/* master ref owned by io_notif_slot, will be dropped on flush */
-	refcount_set(&notif->uarg.refcnt, IO_NOTIF_REF_CACHE_NR + 1);
-	percpu_ref_get(&ctx->refs);
-	notif->rsrc_node = ctx->rsrc_node;
-	io_charge_rsrc_node(ctx);
+	refcount_set(&uarg->refcnt, IO_NOTIF_REF_CACHE_NR + 1);
 	return notif;
 }
 
-static inline void io_notif_consume_ref(struct io_notif *notif)
+static inline void io_notif_consume_ref(struct io_kiocb *notif_req)
 	__must_hold(&ctx->uring_lock)
 {
+	struct io_notif *notif = &notif_req->notif;
+
 	notif->cached_refs--;
 
 	/*
@@ -2639,7 +2564,7 @@ static inline void io_notif_consume_ref(struct io_notif *notif)
 	}
 }
 
-static inline struct io_notif *io_get_notif(struct io_ring_ctx *ctx,
+static inline struct io_kiocb *io_get_notif(struct io_ring_ctx *ctx,
 					    struct io_notif_slot *slot)
 {
 	if (!slot->notif)
@@ -2660,16 +2585,16 @@ static inline struct io_notif_slot *io_get_notif_slot(struct io_ring_ctx *ctx,
 static void io_notif_slot_flush(struct io_notif_slot *slot)
 	__must_hold(&ctx->uring_lock)
 {
-	struct io_notif *notif = slot->notif;
-	int refs = notif->cached_refs + 1;
+	struct io_kiocb *notif = slot->notif;
+	int refs = notif->notif.cached_refs + 1;
 
 	slot->notif = NULL;
-	notif->cached_refs = 0;
+	notif->notif.cached_refs = 0;
 
 	if (WARN_ON_ONCE(in_interrupt()))
 		return;
 	/* drop all cached refs and the slot's master ref */
-	if (refcount_sub_and_test(refs, &notif->uarg.refcnt))
+	if (refcount_sub_and_test(refs, &notif->notif.uarg.refcnt))
 		io_notif_complete(notif);
 }
 
@@ -2705,7 +2630,6 @@ static __cold int io_notif_unregister(struct io_ring_ctx *ctx)
 	kvfree(ctx->notif_slots);
 	ctx->notif_slots = NULL;
 	ctx->nr_notif_slots = 0;
-	io_notif_cache_purge(ctx);
 	return 0;
 }
 
@@ -5827,7 +5751,7 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 	struct io_ring_ctx *ctx = req->ctx;
 	struct io_sendzc *zc = &req->msgzc;
 	struct io_notif_slot *notif_slot;
-	struct io_notif *notif;
+	struct io_kiocb *notif;
 	struct msghdr msg;
 	struct iovec iov;
 	struct socket *sock;
@@ -5865,7 +5789,7 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 					  &msg.msg_iter);
 		if (unlikely(ret))
 			return ret;
-		mm_account_pinned_pages(&notif->uarg.mmp, zc->len);
+		mm_account_pinned_pages(&notif->notif.uarg.mmp, zc->len);
 	}
 
 	if (zc->addr) {
@@ -5883,7 +5807,7 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 		min_ret = iov_iter_count(&msg.msg_iter);
 
 	msg.msg_flags = msg_flags;
-	msg.msg_ubuf = &notif->uarg;
+	msg.msg_ubuf = &notif->notif.uarg;
 	ret = sock_sendmsg(sock, &msg);
 
 	/* check if the send consumed an additional ref */
@@ -5894,7 +5818,7 @@ static int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 		unsigned zc_flags = req->msgzc.zc_flags;
 
 		if (zc_flags & IORING_SENDZC_OVERRIDE_TAG)
-			notif->tag = req->cqe.user_data;
+			notif->cqe.user_data = req->cqe.user_data;
 		if (zc_flags & IORING_SENDZC_FLUSH)
 			io_notif_slot_flush_submit(notif_slot, 0);
 	} else {
@@ -10620,7 +10544,6 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	WARN_ON_ONCE(!list_empty(&ctx->ltimeout_list));
 	WARN_ON_ONCE(ctx->notif_slots || ctx->nr_notif_slots);
 
-	io_notif_cache_purge(ctx);
 	io_mem_free(ctx->rings);
 	io_mem_free(ctx->sq_sqes);
 
@@ -12579,6 +12502,9 @@ static int __init io_uring_init(void)
 
 	BUILD_BUG_ON(ARRAY_SIZE(io_op_defs) != IORING_OP_LAST);
 	BUILD_BUG_ON(__REQ_F_LAST_BIT > 8 * sizeof(int));
+
+	BUILD_BUG_ON(sizeof(struct ubuf_info) > 64);
+	BUILD_BUG_ON(sizeof(struct io_notif) > 64);
 
 	BUILD_BUG_ON(sizeof(atomic_t) != sizeof(u32));
 
