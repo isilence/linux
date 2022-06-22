@@ -16,7 +16,7 @@
 static int io_file_bitmap_get(struct io_ring_ctx *ctx)
 {
 	struct io_file_table *table = &ctx->file_table;
-	unsigned long nr = ctx->nr_user_files;
+	unsigned long nr = ctx->file_alloc_end;
 	int ret;
 
 	do {
@@ -24,11 +24,10 @@ static int io_file_bitmap_get(struct io_ring_ctx *ctx)
 		if (ret != nr)
 			return ret;
 
-		if (!table->alloc_hint)
+		if (table->alloc_hint == ctx->file_alloc_start)
 			break;
-
 		nr = table->alloc_hint;
-		table->alloc_hint = 0;
+		table->alloc_hint = ctx->file_alloc_start;
 	} while (1);
 
 	return -ENFILE;
@@ -138,4 +137,21 @@ err:
 	if (unlikely(ret < 0))
 		fput(file);
 	return ret;
+}
+
+int io_register_file_alloc_range(struct io_ring_ctx *ctx,
+				 struct io_uring_file_index_range __user *arg)
+{
+	struct io_uring_file_index_range range;
+	u32 end;
+
+	if (copy_from_user(&range, arg, sizeof(range)))
+		return -EFAULT;
+	if (check_add_overflow(range.off, range.len, &end))
+		return -EOVERFLOW;
+	if (range.resv || end > ctx->nr_user_files)
+		return -EINVAL;
+
+	io_file_table_set_alloc_range(ctx, range.off, range.len);
+	return 0;
 }

@@ -423,6 +423,8 @@ enum {
 	IORING_REGISTER_PBUF_RING		= 22,
 	IORING_UNREGISTER_PBUF_RING		= 23,
 
+	IORING_REGISTER_FILE_ALLOC_RANGE	= 24,
+
 	/* this goes last */
 	IORING_REGISTER_LAST
 };
@@ -556,6 +558,13 @@ struct io_uring_getevents_arg {
 	__u32	sigmask_sz;
 	__u32	pad;
 	__u64	ts;
+};
+
+struct io_uring_file_index_range {
+	/* [off, off + len) */
+	__u32	off;
+	__u32	len;
+	__u64	resv;
 };
 
 #endif
