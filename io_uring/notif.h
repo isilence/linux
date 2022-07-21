@@ -9,24 +9,8 @@
 #define IORING_MAX_NOTIF_SLOTS (1U << 10)
 
 struct io_notif {
+	struct file		*file;
 	struct ubuf_info	uarg;
-	struct io_ring_ctx	*ctx;
-	struct io_rsrc_node	*rsrc_node;
-
-	/* complete via tw if ->task is non-NULL, fallback to wq otherwise */
-	struct task_struct	*task;
-
-	/* cqe->user_data, io_notif_slot::tag if not overridden */
-	u64			tag;
-	/* see struct io_notif_slot::seq */
-	u32			seq;
-	/* hook into ctx->notif_list and ctx->notif_list_locked */
-	struct list_head	cache_node;
-
-	union {
-		struct callback_head	task_work;
-		struct work_struct	commit_work;
-	};
 };
 
 struct io_notif_slot {
@@ -35,7 +19,7 @@ struct io_notif_slot {
 	 * time and keeps one reference to it. Flush releases the reference and
 	 * lazily replaces it with a new notifier.
 	 */
-	struct io_notif		*notif;
+	struct io_kiocb		*notif;
 
 	/*
 	 * Default ->user_data for this slot notifiers CQEs
@@ -52,13 +36,12 @@ struct io_notif_slot {
 int io_notif_register(struct io_ring_ctx *ctx,
 		      void __user *arg, unsigned int size);
 int io_notif_unregister(struct io_ring_ctx *ctx);
-void io_notif_cache_purge(struct io_ring_ctx *ctx);
 
 void io_notif_slot_flush(struct io_notif_slot *slot);
-struct io_notif *io_alloc_notif(struct io_ring_ctx *ctx,
+struct io_kiocb *io_alloc_notif(struct io_ring_ctx *ctx,
 				struct io_notif_slot *slot);
 
-static inline struct io_notif *io_get_notif(struct io_ring_ctx *ctx,
+static inline struct io_kiocb *io_get_notif(struct io_ring_ctx *ctx,
 					    struct io_notif_slot *slot)
 {
 	if (!slot->notif)
@@ -79,9 +62,12 @@ static inline struct io_notif_slot *io_get_notif_slot(struct io_ring_ctx *ctx,
 static inline void io_notif_slot_flush_submit(struct io_notif_slot *slot,
 					      unsigned int issue_flags)
 {
-	if (!(issue_flags & IO_URING_F_UNLOCKED)) {
-		slot->notif->task = current;
-		io_get_task_refs(1);
-	}
 	io_notif_slot_flush(slot);
+}
+
+static inline struct ubuf_info *io_notif_uarg(struct io_kiocb *notif_req)
+{
+	struct io_notif *notif = io_kiocb_to_cmd(notif_req);
+
+	return &notif->uarg;
 }
