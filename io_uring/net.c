@@ -949,6 +949,7 @@ int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 	struct io_sendzc *zc = io_kiocb_to_cmd(req);
 	struct io_notif_slot *notif_slot;
 	struct io_kiocb *notif;
+	struct ubuf_info *ubuf;
 	struct msghdr msg;
 	struct iovec iov;
 	struct socket *sock;
@@ -1007,9 +1008,14 @@ int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 		min_ret = iov_iter_count(&msg.msg_iter);
 
 	msg.msg_flags = msg_flags;
-	msg.msg_ubuf = &io_notif_to_data(notif)->uarg;
 	msg.sg_from_iter = io_sg_from_iter;
+	msg.msg_ubuf = ubuf = &io_notif_to_data(notif)->uarg;
+	ubuf->flags |= UARGFL_GIFT_REF;
 	ret = sock_sendmsg(sock, &msg);
+
+	/* check if the send consumed an additional ref */
+	if (likely(!(ubuf->flags & UARGFL_GIFT_REF)))
+		io_notif_consume_ref(notif);
 
 	if (unlikely(ret < min_ret)) {
 		if (ret == -EAGAIN && (issue_flags & IO_URING_F_NONBLOCK))

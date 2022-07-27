@@ -68,15 +68,17 @@ struct io_kiocb *io_alloc_notif(struct io_ring_ctx *ctx,
 	nd->uarg.skb_flags = SKBFL_ZEROCOPY_FRAG | SKBFL_DONT_ORPHAN;
 	nd->uarg.flags = UARGFL_CALLER_PINNED;
 	nd->uarg.callback = io_uring_tx_zerocopy_callback;
+	nd->cached_refs = IO_NOTIF_REF_CACHE_NR;
 	/* master ref owned by io_notif_slot, will be dropped on flush */
-	refcount_set(&nd->uarg.refcnt, 1);
+	refcount_set(&nd->uarg.refcnt, IO_NOTIF_REF_CACHE_NR + 1);
 	return notif;
 }
 
 static inline bool io_notif_drop_refs(struct io_notif_data *nd)
 {
-	int refs = 1;
+	int refs = nd->cached_refs + 1;
 
+	nd->cached_refs = 0;
 	return refcount_sub_and_test(refs, &nd->uarg.refcnt);
 }
 

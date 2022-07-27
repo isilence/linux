@@ -9,11 +9,14 @@
 
 #define IO_NOTIF_SPLICE_BATCH	32
 #define IORING_MAX_NOTIF_SLOTS (1U << 10)
+#define IO_NOTIF_REF_CACHE_NR	64
 
 struct io_notif_data {
 	struct file		*file;
-	struct ubuf_info	uarg;
 	unsigned long		account_pages;
+	/* extra uarg->refcnt refs */
+	int			cached_refs;
+	struct ubuf_info	uarg;
 };
 
 struct io_notif_slot {
@@ -87,4 +90,21 @@ static inline int io_notif_account_mem(struct io_kiocb *notif, unsigned len)
 		nd->account_pages += nr_pages;
 	}
 	return 0;
+}
+
+static inline void io_notif_consume_ref(struct io_kiocb *notif)
+	__must_hold(&ctx->uring_lock)
+{
+	struct io_notif_data *nd = io_notif_to_data(notif);
+
+	nd->cached_refs--;
+
+	/*
+	* Issue sends without looking at notif->cached_refs first, so we
+	* always have to have at least one ref cached
+	*/
+	if (unlikely(!nd->cached_refs)) {
+		refcount_add(IO_NOTIF_REF_CACHE_NR, &nd->uarg.refcnt);
+		nd->cached_refs += IO_NOTIF_REF_CACHE_NR;
+	}
 }
