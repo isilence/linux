@@ -535,6 +535,7 @@ struct ubuf_info {
 			 bool zerocopy_success);
 	refcount_t refcnt;
 	u8 skb_flags;
+	u8 flags;
 };
 
 struct ubuf_info_msgzc {

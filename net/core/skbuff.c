@@ -1207,6 +1207,7 @@ static struct ubuf_info *msg_zerocopy_alloc(struct sock *sk, size_t size)
 	uarg->bytelen = size;
 	uarg->zerocopy = 1;
 	uarg->ubuf.skb_flags = SKBFL_ZEROCOPY_FRAG | SKBFL_DONT_ORPHAN;
+	uarg->ubuf.flags = 0;
 	refcount_set(&uarg->ubuf.refcnt, 1);
 	sock_hold(sk);
 
