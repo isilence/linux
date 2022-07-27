@@ -1032,6 +1032,7 @@ static int __ip_append_data(struct sock *sk,
 				paged = true;
 				zc = true;
 				uarg = msg->msg_ubuf;
+				extra_uref = net_zcopy_get_gift_ref(uarg);
 			}
 		} else if (sock_flag(sk, SOCK_ZEROCOPY)) {
 			uarg = msg_zerocopy_realloc(sk, length, skb_zcopy(skb));

@@ -527,6 +527,11 @@ enum {
 	 * be freed until we return.
 	 */
 	UARGFL_CALLER_PINNED = BIT(0),
+
+	/* The caller can gift one ubuf reference. The flag should be cleared
+	 * when the reference is taken.
+	 */
+	UARGFL_GIFT_REF = BIT(1),
 };
 
 /*
@@ -1707,6 +1712,15 @@ static inline void net_zcopy_put(struct ubuf_info *uarg)
 {
 	if (uarg)
 		uarg->callback(NULL, uarg, true);
+}
+
+static inline bool net_zcopy_get_gift_ref(struct ubuf_info *uarg)
+{
+	bool has_ref;
+
+	has_ref = uarg->flags & UARGFL_GIFT_REF;
+	uarg->flags &= ~UARGFL_GIFT_REF;
+	return has_ref;
 }
 
 static inline void net_zcopy_put_abort(struct ubuf_info *uarg, bool have_uref)
