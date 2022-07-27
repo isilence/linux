@@ -522,6 +522,13 @@ enum {
 #define SKBFL_ALL_ZEROCOPY	(SKBFL_ZEROCOPY_FRAG | SKBFL_PURE_ZEROCOPY | \
 				 SKBFL_DONT_ORPHAN | SKBFL_MANAGED_FRAG_REFS)
 
+enum {
+	/* The caller holds a reference during the submission so the ubuf won't
+	 * be freed until we return.
+	 */
+	UARGFL_CALLER_PINNED = BIT(0),
+};
+
 /*
  * The callback notifies userspace to release buffers when skb DMA is done in
  * lower device, the skb last reference should be 0 when calling this.
