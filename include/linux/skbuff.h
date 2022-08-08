@@ -534,7 +534,7 @@ struct ubuf_info {
 	void (*callback)(struct sk_buff *, struct ubuf_info *,
 			 bool zerocopy_success);
 	refcount_t refcnt;
-	u8 flags;
+	u8 skb_flags;
 };
 
 struct ubuf_info_msgzc {
@@ -1664,7 +1664,7 @@ static inline void net_zcopy_get(struct ubuf_info *uarg)
 static inline void skb_zcopy_init(struct sk_buff *skb, struct ubuf_info *uarg)
 {
 	skb_shinfo(skb)->destructor_arg = uarg;
-	skb_shinfo(skb)->flags |= uarg->flags;
+	skb_shinfo(skb)->flags |= uarg->skb_flags;
 }
 
 static inline void skb_zcopy_set(struct sk_buff *skb, struct ubuf_info *uarg,

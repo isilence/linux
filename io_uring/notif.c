@@ -65,7 +65,7 @@ struct io_kiocb *io_alloc_notif(struct io_ring_ctx *ctx,
 
 	nd = io_notif_to_data(notif);
 	nd->account_pages = 0;
-	nd->uarg.flags = SKBFL_ZEROCOPY_FRAG | SKBFL_DONT_ORPHAN;
+	nd->uarg.skb_flags = SKBFL_ZEROCOPY_FRAG | SKBFL_DONT_ORPHAN;
 	nd->uarg.callback = io_uring_tx_zerocopy_callback;
 	/* master ref owned by io_notif_slot, will be dropped on flush */
 	refcount_set(&nd->uarg.refcnt, 1);
