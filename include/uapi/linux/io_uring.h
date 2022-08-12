@@ -286,6 +286,9 @@ enum io_uring_op {
 #define IORING_RECVSEND_FIXED_BUF	(1U << 2)
 #define IORING_RECVSEND_NOTIF_FLUSH	(1U << 3)
 
+/* cqe->res mask for extracting the notification sequence number */
+#define IORING_NOTIF_SEQ_MASK		0xFFFFU
+
 /*
  * accept flags stored in sqe->ioprio
  */
@@ -337,10 +340,13 @@ struct io_uring_cqe {
  * IORING_CQE_F_BUFFER	If set, the upper 16 bits are the buffer ID
  * IORING_CQE_F_MORE	If set, parent SQE will generate more CQE entries
  * IORING_CQE_F_SOCK_NONEMPTY	If set, more data to read after socket recv
+ * IORING_CQE_F_NOTIF	Set for notification CQEs. Can be used to distinct
+ *			them from sends.
  */
 #define IORING_CQE_F_BUFFER		(1U << 0)
 #define IORING_CQE_F_MORE		(1U << 1)
 #define IORING_CQE_F_SOCK_NONEMPTY	(1U << 2)
+#define IORING_CQE_F_NOTIF		(1U << 3)
 
 enum {
 	IORING_CQE_BUFFER_SHIFT		= 16,

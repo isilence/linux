@@ -60,8 +60,8 @@ struct io_kiocb *io_alloc_notif(struct io_ring_ctx *ctx,
 	notif->rsrc_node = NULL;
 	io_req_set_rsrc_node(notif, ctx, 0);
 	notif->cqe.user_data = slot->tag;
-	notif->cqe.flags = slot->seq++;
-	notif->cqe.res = 0;
+	notif->cqe.flags = IORING_CQE_F_NOTIF;
+	notif->cqe.res = slot->seq++ & IORING_NOTIF_SEQ_MASK;
 
 	nd = io_notif_to_data(notif);
 	nd->account_pages = 0;
