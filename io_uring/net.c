@@ -858,7 +858,9 @@ int io_sendzc_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 
 	zc->flags = READ_ONCE(sqe->ioprio);
 	if (zc->flags & ~(IORING_RECVSEND_POLL_FIRST |
-			  IORING_RECVSEND_FIXED_BUF | IORING_RECVSEND_NOTIF_FLUSH))
+			  IORING_RECVSEND_FIXED_BUF |
+			  IORING_RECVSEND_NOTIF_FLUSH |
+			  IORING_RECVSEND_NOTIF_COPY_TAG))
 		return -EINVAL;
 	if (zc->flags & IORING_RECVSEND_FIXED_BUF) {
 		unsigned idx = READ_ONCE(sqe->buf_index);
@@ -1024,6 +1026,8 @@ int io_sendzc(struct io_kiocb *req, unsigned int issue_flags)
 		if (ret == -ERESTARTSYS)
 			ret = -EINTR;
 	} else if (zc->flags & IORING_RECVSEND_NOTIF_FLUSH) {
+		if (zc->flags & IORING_RECVSEND_NOTIF_COPY_TAG)
+			notif->cqe.user_data = req->cqe.user_data;
 		io_notif_slot_flush_submit(notif_slot, 0);
 	}
 

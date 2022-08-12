@@ -280,11 +280,15 @@ enum io_uring_op {
  *
  * IORING_RECVSEND_NOTIF_FLUSH	Flush a notification after a successful
  *				successful. Only for zerocopy sends.
+ *
+ * IORING_RECVSEND_NOTIF_COPY_TAG Copy request's user_data into the notification
+ *				  completion even if it's flushed.
  */
 #define IORING_RECVSEND_POLL_FIRST	(1U << 0)
 #define IORING_RECV_MULTISHOT		(1U << 1)
 #define IORING_RECVSEND_FIXED_BUF	(1U << 2)
 #define IORING_RECVSEND_NOTIF_FLUSH	(1U << 3)
+#define IORING_RECVSEND_NOTIF_COPY_TAG	(1U << 4)
 
 /* cqe->res mask for extracting the notification sequence number */
 #define IORING_NOTIF_SEQ_MASK		0xFFFFU
