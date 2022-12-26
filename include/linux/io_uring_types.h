@@ -286,6 +286,7 @@ struct io_ring_ctx {
 		unsigned		cq_entries;
 		struct io_ev_fd	__rcu	*io_ev_fd;
 		struct wait_queue_head	cq_wait;
+		struct wait_queue_head	poll_wq;
 		unsigned		cq_extra;
 	} ____cacheline_aligned_in_smp;
 
