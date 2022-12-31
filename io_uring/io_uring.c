@@ -1273,7 +1273,8 @@ static void io_req_local_work_add(struct io_kiocb *req)
 	if (ctx->has_evfd)
 		io_eventfd_signal(ctx);
 
-	wake_up_state(ctx->submitter_task, TASK_INTERRUPTIBLE);
+	if (READ_ONCE(ctx->cq_waiting))
+		wake_up_state(ctx->submitter_task, TASK_INTERRUPTIBLE);
 }
 
 void __io_req_task_work_add(struct io_kiocb *req, bool allow_local)
@@ -2560,6 +2561,7 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events,
 
 		if (ctx->flags & IORING_SETUP_DEFER_TASKRUN) {
 			set_current_state(TASK_INTERRUPTIBLE);
+			smp_store_mb(ctx->cq_waiting, 1);
 		} else {
 			prepare_to_wait_exclusive(&ctx->cq_wait, &iowq.wq,
 							TASK_INTERRUPTIBLE);
@@ -2567,6 +2569,8 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events,
 
 		ret = io_cqring_wait_schedule(ctx, &iowq, timeout);
 		__set_current_state(TASK_RUNNING);
+		WRITE_ONCE(ctx->cq_waiting, 0);
+
 		if (ret < 0)
 			break;
 		/*

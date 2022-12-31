@@ -285,6 +285,7 @@ struct io_ring_ctx {
 
 		unsigned		cached_cq_tail;
 		unsigned		cq_entries;
+		bool			cq_waiting;
 		struct io_ev_fd	__rcu	*io_ev_fd;
 		struct wait_queue_head	cq_wait;
 		struct wait_queue_head	poll_wq;
