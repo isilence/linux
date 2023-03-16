@@ -57,6 +57,7 @@ struct io_mapped_ubuf {
 	u64		ubuf_end;
 	unsigned int	nr_bvecs;
 	unsigned int	max_bvecs;
+	unsigned int	dir_mask;
 	unsigned long	acct_pages;
 	struct bio_vec	bvec[];
 };

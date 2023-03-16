@@ -1185,6 +1185,7 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 	imu->ubuf = (unsigned long) iov->iov_base;
 	imu->ubuf_end = imu->ubuf + iov->iov_len;
 	imu->nr_bvecs = nr_pages;
+	imu->dir_mask = (1U << ITER_SOURCE) | (1U << ITER_DEST);
 	*pimu = imu;
 	ret = 0;
 
@@ -1274,12 +1275,16 @@ int io_import_fixed(int ddir, struct iov_iter *iter,
 	u64 buf_end;
 	size_t offset;
 
+	BUILD_BUG_ON((1U << ITER_SOURCE) & (1U << ITER_DEST));
+
 	if (WARN_ON_ONCE(!imu))
 		return -EFAULT;
 	if (unlikely(check_add_overflow(buf_addr, (u64)len, &buf_end)))
 		return -EFAULT;
 	/* not inside the mapped region */
 	if (unlikely(buf_addr < imu->ubuf || buf_end > imu->ubuf_end))
+		return -EFAULT;
+	if (unlikely(!((1U << ddir) & imu->dir_mask)))
 		return -EFAULT;
 
 	/*
