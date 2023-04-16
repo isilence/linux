@@ -75,6 +75,9 @@ void __io_sqe_buffers_unregister(struct io_ring_ctx *ctx);
 int io_sqe_buffers_unregister(struct io_ring_ctx *ctx);
 int io_sqe_buffers_register(struct io_ring_ctx *ctx, void __user *arg,
 			    unsigned int nr_args, u64 __user *tags);
+int io_install_buffer(struct io_ring_ctx *ctx, struct io_mapped_ubuf *imu,
+		      unsigned i);
+
 void __io_sqe_files_unregister(struct io_ring_ctx *ctx);
 int io_sqe_files_unregister(struct io_ring_ctx *ctx);
 int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,

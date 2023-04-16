@@ -517,6 +517,21 @@ static int __io_sqe_buffers_update(struct io_ring_ctx *ctx,
 	return done ? done : err;
 }
 
+int io_install_buffer(struct io_ring_ctx *ctx,
+		      struct io_mapped_ubuf *imu,
+		      unsigned i)
+{
+	if (unlikely(i >= ctx->nr_user_bufs))
+		return -EFAULT;
+
+	i = array_index_nospec(i, ctx->nr_user_bufs);
+	if (unlikely(ctx->user_bufs[i] != ctx->dummy_ubuf))
+		return -EINVAL;
+
+	ctx->user_bufs[i] = imu;
+	return 0;
+}
+
 static int __io_register_rsrc_update(struct io_ring_ctx *ctx, unsigned type,
 				     struct io_uring_rsrc_update2 *up,
 				     unsigned nr_args)
