@@ -33,6 +33,8 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 #define IORING_MAX_FIXED_FILES	(1U << 20)
 #define IORING_MAX_REG_BUFFERS	(1U << 14)
 
+#define IO_BUF_CACHE_MAX_BVECS	64
+
 int __io_account_mem(struct user_struct *user, unsigned long nr_pages)
 {
 	unsigned long page_limit, cur_pages, new_pages;
@@ -76,6 +78,39 @@ static int io_account_mem(struct io_ring_ctx *ctx, unsigned long nr_pages)
 		atomic64_add(nr_pages, &ctx->mm_account->pinned_vm);
 
 	return 0;
+}
+
+static void io_put_reg_buf(struct io_ring_ctx *ctx, struct io_mapped_ubuf *imu)
+{
+	lockdep_assert_held(&ctx->uring_lock);
+
+	if ((imu->max_bvecs != IO_BUF_CACHE_MAX_BVECS) ||
+	    !io_alloc_cache_put(&ctx->reg_buf_cache, &imu->cache))
+		kvfree(imu);
+}
+
+static struct io_mapped_ubuf *io_alloc_reg_buf(struct io_ring_ctx *ctx,
+					       int nr_bvecs)
+{
+	struct io_cache_entry *entry;
+	struct io_mapped_ubuf *imu;
+
+	lockdep_assert_held(&ctx->uring_lock);
+
+	if (nr_bvecs > IO_BUF_CACHE_MAX_BVECS) {
+do_alloc:
+		imu = kvmalloc(struct_size(imu, bvec, nr_bvecs), GFP_KERNEL);
+		if (!imu)
+			return NULL;
+	} else {
+		nr_bvecs = IO_BUF_CACHE_MAX_BVECS;
+		entry = io_alloc_cache_get(&ctx->reg_buf_cache);
+		if (!entry)
+			goto do_alloc;
+		imu = container_of(entry, struct io_mapped_ubuf, cache);
+	}
+	imu->max_bvecs = nr_bvecs;
+	return imu;
 }
 
 static int io_copy_iov(struct io_ring_ctx *ctx, struct iovec *dst,
@@ -137,7 +172,7 @@ static void io_buffer_unmap(struct io_ring_ctx *ctx, struct io_mapped_ubuf **slo
 			unpin_user_page(imu->bvec[i].bv_page);
 		if (imu->acct_pages)
 			io_unaccount_mem(ctx, imu->acct_pages);
-		kvfree(imu);
+		io_put_reg_buf(ctx, imu);
 	}
 	*slot = NULL;
 }
@@ -1134,7 +1169,7 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 		}
 	}
 
-	imu = kvmalloc(struct_size(imu, bvec, nr_pages), GFP_KERNEL);
+	imu = io_alloc_reg_buf(ctx, nr_pages);
 	if (!imu)
 		goto done;
 

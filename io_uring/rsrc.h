@@ -50,9 +50,13 @@ struct io_rsrc_node {
 };
 
 struct io_mapped_ubuf {
-	u64		ubuf;
+	union {
+		struct io_cache_entry		cache;
+		u64				ubuf;
+	};
 	u64		ubuf_end;
 	unsigned int	nr_bvecs;
+	unsigned int	max_bvecs;
 	unsigned long	acct_pages;
 	struct bio_vec	bvec[];
 };

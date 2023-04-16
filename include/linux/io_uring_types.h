@@ -336,6 +336,8 @@ struct io_ring_ctx {
 	struct wait_queue_head		rsrc_quiesce_wq;
 	unsigned			rsrc_quiesce;
 
+	struct io_alloc_cache		reg_buf_cache;
+
 	struct list_head		io_buffers_pages;
 
 	#if defined(CONFIG_UNIX)

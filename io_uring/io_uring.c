@@ -312,6 +312,8 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_LIST_HEAD(&ctx->io_buffers_cache);
 	io_alloc_cache_init(&ctx->rsrc_node_cache, IO_NODE_ALLOC_CACHE_MAX,
 			    sizeof(struct io_rsrc_node));
+	io_alloc_cache_init(&ctx->reg_buf_cache, IO_NODE_ALLOC_CACHE_MAX,
+			    sizeof(struct io_async_msghdr));
 	io_alloc_cache_init(&ctx->apoll_cache, IO_ALLOC_CACHE_MAX,
 			    sizeof(struct async_poll));
 	io_alloc_cache_init(&ctx->netmsg_cache, IO_ALLOC_CACHE_MAX,
@@ -2827,6 +2829,11 @@ static void io_rsrc_node_cache_free(struct io_cache_entry *entry)
 	kfree(container_of(entry, struct io_rsrc_node, cache));
 }
 
+static void io_reg_buf_cache_free(struct io_cache_entry *entry)
+{
+	kvfree(container_of(entry, struct io_mapped_ubuf, cache));
+}
+
 static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 {
 	io_sq_thread_finish(ctx);
@@ -2865,6 +2872,8 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	WARN_ON_ONCE(!list_empty(&ctx->ltimeout_list));
 
 	io_alloc_cache_free(&ctx->rsrc_node_cache, io_rsrc_node_cache_free);
+	io_alloc_cache_free(&ctx->reg_buf_cache, io_reg_buf_cache_free);
+
 	if (ctx->mm_account) {
 		mmdrop(ctx->mm_account);
 		ctx->mm_account = NULL;
