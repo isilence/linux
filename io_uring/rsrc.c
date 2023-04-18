@@ -111,6 +111,8 @@ do_alloc:
 	}
 	imu->desc.bvec = imu->bvec;
 	imu->desc.max_bvecs = nr_bvecs;
+	imu->desc.private = NULL;
+	imu->desc.release = NULL;
 	return imu;
 }
 
@@ -169,10 +171,14 @@ static void io_buffer_unmap(struct io_ring_ctx *ctx, struct io_mapped_ubuf **slo
 	unsigned int i;
 
 	if (imu != ctx->dummy_ubuf) {
-		for (i = 0; i < imu->desc.nr_bvecs; i++)
-			unpin_user_page(imu->bvec[i].bv_page);
-		if (imu->acct_pages)
-			io_unaccount_mem(ctx, imu->acct_pages);
+		if (imu->desc.release) {
+			io_reg_buf_release(imu);
+		} else {
+			for (i = 0; i < imu->desc.nr_bvecs; i++)
+				unpin_user_page(imu->bvec[i].bv_page);
+			if (imu->acct_pages)
+				io_unaccount_mem(ctx, imu->acct_pages);
+		}
 		io_put_reg_buf(ctx, imu);
 	}
 	*slot = NULL;

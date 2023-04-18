@@ -169,4 +169,9 @@ static inline void __io_unaccount_mem(struct user_struct *user,
 	atomic_long_sub(nr_pages, &user->locked_vm);
 }
 
+static inline void io_reg_buf_release(struct io_mapped_ubuf *imu)
+{
+	imu->desc.release(&imu->desc);
+}
+
 #endif

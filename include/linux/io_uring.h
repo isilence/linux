@@ -26,6 +26,8 @@ struct iou_buf_desc {
 	unsigned		nr_bvecs;
 	unsigned		max_bvecs;
 	struct bio_vec		*bvec;
+	void			(*release)(struct iou_buf_desc *);
+	void			*private;
 };
 
 struct io_uring_cmd {
