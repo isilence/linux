@@ -54,12 +54,11 @@ struct io_mapped_ubuf {
 		struct io_cache_entry		cache;
 		u64				ubuf;
 	};
-	u64		ubuf_end;
-	unsigned int	nr_bvecs;
-	unsigned int	max_bvecs;
-	unsigned int	dir_mask;
-	unsigned long	acct_pages;
-	struct bio_vec	bvec[];
+	u64			ubuf_end;
+	struct iou_buf_desc	desc;
+	unsigned int		dir_mask;
+	unsigned long		acct_pages;
+	struct bio_vec		bvec[];
 };
 
 void io_rsrc_put_tw(struct callback_head *cb);

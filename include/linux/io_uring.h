@@ -22,6 +22,12 @@ enum io_uring_cmd_flags {
 	IO_URING_F_IOPOLL		= (1 << 10),
 };
 
+struct iou_buf_desc {
+	unsigned		nr_bvecs;
+	unsigned		max_bvecs;
+	struct bio_vec		*bvec;
+};
+
 struct io_uring_cmd {
 	struct file	*file;
 	const void	*cmd;

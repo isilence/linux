@@ -84,7 +84,7 @@ static void io_put_reg_buf(struct io_ring_ctx *ctx, struct io_mapped_ubuf *imu)
 {
 	lockdep_assert_held(&ctx->uring_lock);
 
-	if ((imu->max_bvecs != IO_BUF_CACHE_MAX_BVECS) ||
+	if ((imu->desc.max_bvecs != IO_BUF_CACHE_MAX_BVECS) ||
 	    !io_alloc_cache_put(&ctx->reg_buf_cache, &imu->cache))
 		kvfree(imu);
 }
@@ -109,7 +109,8 @@ do_alloc:
 			goto do_alloc;
 		imu = container_of(entry, struct io_mapped_ubuf, cache);
 	}
-	imu->max_bvecs = nr_bvecs;
+	imu->desc.bvec = imu->bvec;
+	imu->desc.max_bvecs = nr_bvecs;
 	return imu;
 }
 
@@ -168,7 +169,7 @@ static void io_buffer_unmap(struct io_ring_ctx *ctx, struct io_mapped_ubuf **slo
 	unsigned int i;
 
 	if (imu != ctx->dummy_ubuf) {
-		for (i = 0; i < imu->nr_bvecs; i++)
+		for (i = 0; i < imu->desc.nr_bvecs; i++)
 			unpin_user_page(imu->bvec[i].bv_page);
 		if (imu->acct_pages)
 			io_unaccount_mem(ctx, imu->acct_pages);
@@ -1020,7 +1021,7 @@ static bool headpage_already_acct(struct io_ring_ctx *ctx, struct page **pages,
 	for (i = 0; i < ctx->nr_user_bufs; i++) {
 		struct io_mapped_ubuf *imu = ctx->user_bufs[i];
 
-		for (j = 0; j < imu->nr_bvecs; j++) {
+		for (j = 0; j < imu->desc.nr_bvecs; j++) {
 			if (!PageCompound(imu->bvec[j].bv_page))
 				continue;
 			if (compound_head(imu->bvec[j].bv_page) == hpage)
@@ -1184,7 +1185,7 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 	/* store original address for later verification */
 	imu->ubuf = (unsigned long) iov->iov_base;
 	imu->ubuf_end = imu->ubuf + iov->iov_len;
-	imu->nr_bvecs = nr_pages;
+	imu->desc.nr_bvecs = nr_pages;
 	imu->dir_mask = (1U << ITER_SOURCE) | (1U << ITER_DEST);
 	*pimu = imu;
 	ret = 0;
@@ -1292,7 +1293,7 @@ int io_import_fixed(int ddir, struct iov_iter *iter,
 	 * and advance us to the beginning.
 	 */
 	offset = buf_addr - imu->ubuf;
-	iov_iter_bvec(iter, ddir, imu->bvec, imu->nr_bvecs, offset + len);
+	iov_iter_bvec(iter, ddir, imu->bvec, imu->desc.nr_bvecs, offset + len);
 
 	if (offset) {
 		/*
