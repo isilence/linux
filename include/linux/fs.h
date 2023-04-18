@@ -1753,6 +1753,7 @@ struct dir_context {
 
 struct iov_iter;
 struct io_uring_cmd;
+struct iou_get_buf_info;
 
 struct file_operations {
 	struct module *owner;
@@ -1798,6 +1799,7 @@ struct file_operations {
 	int (*uring_cmd)(struct io_uring_cmd *ioucmd, unsigned int issue_flags);
 	int (*uring_cmd_iopoll)(struct io_uring_cmd *, struct io_comp_batch *,
 				unsigned int poll_flags);
+	int (*iou_get_buf)(struct file *file, struct iou_get_buf_info *);
 } __randomize_layout;
 
 struct inode_operations {

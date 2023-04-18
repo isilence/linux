@@ -177,4 +177,6 @@ static inline void io_reg_buf_release(struct io_mapped_ubuf *imu)
 	imu->desc.release(&imu->desc);
 }
 
+struct io_mapped_ubuf *io_alloc_reg_buf(struct io_ring_ctx *ctx, int nr_bvecs);
+
 #endif

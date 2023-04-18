@@ -30,6 +30,17 @@ struct iou_buf_desc {
 	void			*private;
 };
 
+enum {
+	IOU_GET_BUF_F_NOWAIT	= 1,
+};
+
+struct iou_get_buf_info {
+	loff_t			off;
+	size_t			len;
+	unsigned		flags;
+	struct iou_buf_desc	*desc;
+};
+
 struct io_uring_cmd {
 	struct file	*file;
 	const void	*cmd;

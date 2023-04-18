@@ -428,6 +428,13 @@ const struct io_issue_def io_issue_defs[] = {
 		.prep			= io_eopnotsupp_prep,
 #endif
 	},
+	[IORING_OP_GET_BUF] = {
+		.needs_file		= 1,
+		.unbound_nonreg_file	= 1,
+		.pollin			= 1,
+		.prep			= io_get_buf_prep,
+		.issue			= io_get_buf,
+	},
 };
 
 
@@ -647,6 +654,10 @@ const struct io_cold_def io_cold_defs[] = {
 		.cleanup		= io_send_zc_cleanup,
 		.fail			= io_sendrecv_fail,
 #endif
+	},
+	[IORING_OP_GET_BUF] = {
+		.name			= "IORING_OP_GET_BUF",
+		.cleanup		= io_get_buf_cleanup,
 	},
 };
 

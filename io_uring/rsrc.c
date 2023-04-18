@@ -89,7 +89,7 @@ static void io_put_reg_buf(struct io_ring_ctx *ctx, struct io_mapped_ubuf *imu)
 		kvfree(imu);
 }
 
-static struct io_mapped_ubuf *io_alloc_reg_buf(struct io_ring_ctx *ctx,
+struct io_mapped_ubuf *io_alloc_reg_buf(struct io_ring_ctx *ctx,
 					       int nr_bvecs)
 {
 	struct io_cache_entry *entry;

@@ -13,6 +13,7 @@
 
 #include "io_uring.h"
 #include "splice.h"
+#include "rsrc.h"
 
 struct io_splice {
 	struct file			*file_out;
@@ -115,6 +116,95 @@ int io_splice(struct io_kiocb *req, unsigned int issue_flags)
 		io_put_file(in);
 done:
 	if (ret != sp->len)
+		req_set_fail(req);
+	io_req_set_res(req, ret, 0);
+	return IOU_OK;
+}
+
+struct io_get_buf {
+	struct file			*file;
+	struct io_mapped_ubuf		*imu;
+	int				max_pages;
+	loff_t				off;
+	u64				len;
+};
+
+void io_get_buf_cleanup(struct io_kiocb *req)
+{
+	struct io_get_buf *gb = io_kiocb_to_cmd(req, struct io_get_buf);
+	struct io_mapped_ubuf *imu = gb->imu;
+
+	if (!imu)
+		return;
+	if (imu->desc.nr_bvecs && !WARN_ON_ONCE(!imu->desc.release))
+		io_reg_buf_release(imu);
+
+	kvfree(imu);
+	gb->imu = NULL;
+}
+
+int io_get_buf_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
+{
+	struct io_get_buf *gb = io_kiocb_to_cmd(req, struct io_get_buf);
+	struct io_mapped_ubuf *imu;
+	int nr_pages;
+
+	if (unlikely(sqe->splice_flags || sqe->splice_fd_in || sqe->ioprio ||
+		     sqe->addr || sqe->addr3))
+		return -EINVAL;
+
+	req->buf_index = READ_ONCE(sqe->buf_index);
+	gb->len = READ_ONCE(sqe->len);
+	gb->off = READ_ONCE(sqe->off);
+	nr_pages = (gb->len >> PAGE_SHIFT) + 2;
+	gb->max_pages = nr_pages;
+
+	gb->imu = imu = io_alloc_reg_buf(req->ctx, nr_pages);
+	if (!imu)
+		return -ENOMEM;
+	imu->desc.nr_bvecs = 0;
+	req->flags |= REQ_F_NEED_CLEANUP;
+	return 0;
+}
+
+int io_get_buf(struct io_kiocb *req, unsigned int issue_flags)
+{
+	struct io_get_buf *gb = io_kiocb_to_cmd(req, struct io_get_buf);
+	struct io_mapped_ubuf *imu = gb->imu;
+	struct iou_get_buf_info bi;
+	int ret, err;
+
+	bi.off = gb->off;
+	bi.len = gb->len;
+	bi.flags = (issue_flags & IO_URING_F_NONBLOCK) ? IOU_GET_BUF_F_NOWAIT : 0;
+	bi.desc = &imu->desc;
+
+	if (!gb->file->f_op->iou_get_buf)
+		return -ENOTSUPP;
+	ret = gb->file->f_op->iou_get_buf(gb->file, &bi);
+	if (ret < 0) {
+		if (ret == -EAGAIN && (issue_flags & IO_URING_F_NONBLOCK))
+			return -EAGAIN;
+		goto done;
+	}
+
+	imu->ubuf = 0;
+	imu->ubuf_end = ret;
+	imu->dir_mask = 1U << ITER_SOURCE;
+	imu->acct_pages = 0;
+
+	io_ring_submit_lock(req->ctx, issue_flags);
+	err = io_install_buffer(req->ctx, imu, req->buf_index);
+	io_ring_submit_unlock(req->ctx, issue_flags);
+	if (unlikely(err)) {
+		ret = err;
+		goto done;
+	}
+
+	gb->imu = NULL;
+	req->flags &= ~REQ_F_NEED_CLEANUP;
+done:
+	if (ret != gb->len)
 		req_set_fail(req);
 	io_req_set_res(req, ret, 0);
 	return IOU_OK;

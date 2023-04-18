@@ -5,3 +5,7 @@ int io_tee(struct io_kiocb *req, unsigned int issue_flags);
 
 int io_splice_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe);
 int io_splice(struct io_kiocb *req, unsigned int issue_flags);
+
+int io_get_buf_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe);
+int io_get_buf(struct io_kiocb *req, unsigned int issue_flags);
+void io_get_buf_cleanup(struct io_kiocb *req);
