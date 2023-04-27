@@ -523,12 +523,20 @@ int io_install_buffer(struct io_ring_ctx *ctx,
 {
 	if (unlikely(i >= ctx->nr_user_bufs))
 		return -EFAULT;
-
 	i = array_index_nospec(i, ctx->nr_user_bufs);
-	if (unlikely(ctx->user_bufs[i] != ctx->dummy_ubuf))
-		return -EINVAL;
 
-	ctx->user_bufs[i] = imu;
+	if (ctx->user_bufs[i] != ctx->dummy_ubuf) {
+		int ret;
+
+		ret = io_queue_rsrc_removal(ctx->buf_data, i, ctx->user_bufs[i]);
+		if (unlikely(ret))
+			return ret;
+		ctx->user_bufs[i] = ctx->dummy_ubuf;
+		*io_get_tag_slot(ctx->buf_data, i) = 0;
+	}
+
+	if (imu)
+		ctx->user_bufs[i] = imu;
 	return 0;
 }
 
