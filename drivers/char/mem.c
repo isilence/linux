@@ -30,6 +30,7 @@
 #include <linux/uio.h>
 #include <linux/uaccess.h>
 #include <linux/security.h>
+#include <linux/io_uring.h>
 
 #ifdef CONFIG_IA64
 # include <linux/efi.h>
@@ -37,6 +38,8 @@
 
 #define DEVMEM_MINOR	1
 #define DEVPORT_MINOR	4
+
+static struct page *null_char_page;
 
 static inline unsigned long size_inside_page(unsigned long start,
 					     unsigned long size)
@@ -643,6 +646,75 @@ static int open_port(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+static void zero_get_buf_release(struct iou_buf_desc *desc)
+{
+	int i;
+
+	for (i = 0; i < desc->nr_bvecs; i++)
+		put_page(desc->bvec[i].bv_page);
+}
+
+#include <linux/splice.h>
+
+static ssize_t zero_splice_read(struct file *f, loff_t *ppos,
+				struct pipe_inode_info *pipe,
+				size_t size, unsigned int flags)
+{
+	struct partial_page partial[16];
+	struct page *pages[16];
+	struct splice_pipe_desc spd = {
+		.pages = pages,
+		.partial = partial,
+		.nr_pages_max = 16,
+		.ops = &nosteal_pipe_buf_ops,
+	};
+	int ret = 0;
+
+	if (unlikely(*ppos))
+		return -ESPIPE;
+
+	while (size && spd.nr_pages != spd.nr_pages_max) {
+		size_t cur_len = min(size, (size_t)PAGE_SIZE);
+
+		get_page(null_char_page);
+		pages[spd.nr_pages] = null_char_page;
+		partial[spd.nr_pages].offset = 0;
+		partial[spd.nr_pages].len = cur_len;
+		partial[spd.nr_pages].private = 0;
+		spd.nr_pages++;
+		size -= cur_len;
+	}
+
+	if (spd.nr_pages)
+		ret = splice_to_pipe(pipe, &spd);
+	return ret;
+}
+
+
+static int zero_get_buf(struct file *file, struct iou_get_buf_info *bi)
+{
+	struct iou_buf_desc *d = bi->desc;
+	size_t done = 0;
+
+	if (bi->off)
+		return -EINVAL;
+
+
+	while (done != bi->len && d->nr_bvecs < d->max_bvecs) {
+		size_t cur_len = min(bi->len - done, PAGE_SIZE);
+
+		get_page(null_char_page);
+		bvec_set_page(&d->bvec[d->nr_bvecs], null_char_page, cur_len, 0);
+		d->nr_bvecs++;
+		done += cur_len;
+	}
+
+	d->private = NULL;
+	d->release = zero_get_buf_release;
+	return done;
+}
+
+
 #define zero_lseek	null_lseek
 #define full_lseek      null_lseek
 #define write_zero	write_null
@@ -669,6 +741,8 @@ static const struct file_operations null_fops = {
 	.write_iter	= write_iter_null,
 	.splice_write	= splice_write_null,
 	.uring_cmd	= uring_cmd_null,
+	.iou_get_buf	= zero_get_buf,
+	.splice_read	= zero_splice_read,
 };
 
 static const struct file_operations __maybe_unused port_fops = {
@@ -757,10 +831,17 @@ static struct class *mem_class;
 
 static int __init chr_dev_init(void)
 {
+	void *pa;
 	int minor;
 
 	if (register_chrdev(MEM_MAJOR, "mem", &memory_fops))
 		printk("unable to get major %d for memory devs\n", MEM_MAJOR);
+
+	null_char_page = alloc_page(GFP_KERNEL);
+	if (!null_char_page)
+		return -ENOMEM;
+	pa = page_address(null_char_page);
+	memset(pa, 0xab, PAGE_SIZE);
 
 	mem_class = class_create(THIS_MODULE, "mem");
 	if (IS_ERR(mem_class))
