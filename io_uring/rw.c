@@ -83,18 +83,6 @@ int io_prep_rw(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	/* used for fixed read/write too - just read unconditionally */
 	req->buf_index = READ_ONCE(sqe->buf_index);
 
-	if (req->opcode == IORING_OP_READ_FIXED ||
-	    req->opcode == IORING_OP_WRITE_FIXED) {
-		struct io_ring_ctx *ctx = req->ctx;
-		u16 index;
-
-		if (unlikely(req->buf_index >= ctx->nr_user_bufs))
-			return -EFAULT;
-		index = array_index_nospec(req->buf_index, ctx->nr_user_bufs);
-		req->imu = ctx->user_bufs[index];
-		io_req_set_rsrc_node(req, ctx, 0);
-	}
-
 	ioprio = READ_ONCE(sqe->ioprio);
 	if (ioprio) {
 		ret = ioprio_check_cap(ioprio);
@@ -720,6 +708,22 @@ int io_read(struct io_kiocb *req, unsigned int issue_flags)
 	ssize_t ret, ret2;
 	loff_t *ppos;
 
+	if (req->opcode == IORING_OP_READ_FIXED ||
+	    req->opcode == IORING_OP_WRITE_FIXED) {
+		struct io_ring_ctx *ctx = req->ctx;
+		u16 index;
+
+		io_ring_submit_lock(ctx, issue_flags);
+		if (unlikely(req->buf_index >= ctx->nr_user_bufs)) {
+			io_ring_submit_unlock(ctx, issue_flags);
+			return -EFAULT;
+		}
+		index = array_index_nospec(req->buf_index, ctx->nr_user_bufs);
+		req->imu = ctx->user_bufs[index];
+		io_req_set_rsrc_node(req, ctx, 0);
+		io_ring_submit_unlock(ctx, issue_flags);
+	}
+
 	if (!req_has_async_data(req)) {
 		ret = io_import_iovec(ITER_DEST, req, &iovec, s, issue_flags);
 		if (unlikely(ret < 0))
@@ -866,6 +870,22 @@ int io_write(struct io_kiocb *req, unsigned int issue_flags)
 	bool force_nonblock = issue_flags & IO_URING_F_NONBLOCK;
 	ssize_t ret, ret2;
 	loff_t *ppos;
+
+	if (req->opcode == IORING_OP_READ_FIXED ||
+	    req->opcode == IORING_OP_WRITE_FIXED) {
+		struct io_ring_ctx *ctx = req->ctx;
+		u16 index;
+
+		io_ring_submit_lock(ctx, issue_flags);
+		if (unlikely(req->buf_index >= ctx->nr_user_bufs)) {
+			io_ring_submit_unlock(ctx, issue_flags);
+			return -EFAULT;
+		}
+		index = array_index_nospec(req->buf_index, ctx->nr_user_bufs);
+		req->imu = ctx->user_bufs[index];
+		io_req_set_rsrc_node(req, ctx, 0);
+		io_ring_submit_unlock(ctx, issue_flags);
+	}
 
 	if (!req_has_async_data(req)) {
 		ret = io_import_iovec(ITER_SOURCE, req, &iovec, s, issue_flags);
