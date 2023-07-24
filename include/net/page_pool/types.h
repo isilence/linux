@@ -136,6 +136,8 @@ struct memory_provider_ops {
 	bool (*release_page)(struct page_pool *pool, netmem_ref netmem);
 };
 
+extern const struct memory_provider_ops dmabuf_devmem_ops;
+
 struct page_pool {
 	struct page_pool_params_fast p;
 
