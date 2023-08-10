@@ -38,6 +38,8 @@ enum io_uring_cmd_flags {
 	IO_URING_F_COMPAT		= (1 << 12),
 };
 
+struct io_zc_rx_ifq;
+
 struct io_wq_work_node {
 	struct io_wq_work_node *next;
 };
@@ -180,6 +182,10 @@ struct io_rings {
 	 * entries.
 	 */
 	struct io_uring_cqe	cqes[] ____cacheline_aligned_in_smp;
+};
+
+struct io_rbuf_ring {
+	struct io_uring		rq, cq;
 };
 
 struct io_restriction {
@@ -382,6 +388,8 @@ struct io_ring_ctx {
 	struct io_mapped_ubuf		*dummy_ubuf;
 	struct io_rsrc_data		*file_data;
 	struct io_rsrc_data		*buf_data;
+
+	struct io_zc_rx_ifq		*ifq;
 
 	/* protected by ->uring_lock */
 	struct list_head		rsrc_ref_list;

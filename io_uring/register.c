@@ -26,6 +26,7 @@
 #include "register.h"
 #include "cancel.h"
 #include "kbuf.h"
+#include "zc_rx.h"
 
 #define IORING_MAX_RESTRICTIONS	(IORING_RESTRICTION_LAST + \
 				 IORING_REGISTER_LAST + IORING_OP_LAST)
@@ -549,6 +550,12 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 		if (!arg || nr_args != 1)
 			break;
 		ret = io_register_pbuf_status(ctx, arg);
+		break;
+	case IORING_REGISTER_ZC_RX_IFQ:
+		ret = -EINVAL;
+		if (!arg || nr_args != 1)
+			break;
+		ret = io_register_zc_rx_ifq(ctx, arg);
 		break;
 	default:
 		ret = -EINVAL;
