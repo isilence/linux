@@ -5,10 +5,12 @@
 #include <linux/nospec.h>
 #include <linux/netdevice.h>
 #include <linux/io_uring.h>
+#include <linux/io_uring/net.h>
 #include <net/busy_poll.h>
 #include <net/tcp.h>
 #include <net/rps.h>
 #include <net/page_pool/helpers.h>
+#include <net/netdev_rx_queue.h>
 #include <linux/skbuff_ref.h>
 
 #include <uapi/linux/io_uring.h>
@@ -44,6 +46,38 @@ static inline struct page *io_zcrx_iov_page(const struct net_iov *niov)
 	struct io_zcrx_area *area = io_zcrx_iov_to_area(niov);
 
 	return area->pages[net_iov_idx(niov)];
+}
+
+static int io_open_zc_rxq(struct io_zcrx_ifq *ifq)
+{
+	struct netdev_rx_queue *rxq;
+
+	ASSERT_RTNL();
+
+	rxq = __netif_get_rx_queue(ifq->dev, ifq->if_rxq);
+	if (rxq->mp_params.mp_priv)
+		return -EEXIST;
+
+	rxq->mp_params.mp_ops = &io_uring_pp_zc_ops;
+	rxq->mp_params.mp_priv = ifq;
+
+	return netdev_rx_queue_restart(ifq->dev, ifq->if_rxq);
+}
+
+static int io_close_zc_rxq(struct io_zcrx_ifq *ifq)
+{
+	struct netdev_rx_queue *rxq;
+	int err;
+
+	rtnl_lock();
+	rxq = __netif_get_rx_queue(ifq->dev, ifq->if_rxq);
+	rxq->mp_params.mp_ops = NULL;
+	rxq->mp_params.mp_priv = NULL;
+
+	err = netdev_rx_queue_restart(ifq->dev, ifq->if_rxq);
+	rtnl_unlock();
+
+	return err;
 }
 
 static int io_allocate_rbuf_ring(struct io_zcrx_ifq *ifq,
@@ -168,13 +202,22 @@ static void io_shutdown_ifq(struct io_zcrx_ifq *ifq)
 {
 	if (!ifq)
 		return;
+
+	if (ifq->if_rxq != -1) {
+		io_close_zc_rxq(ifq);
+		ifq->if_rxq = -1;
+	}
 }
 
 static void io_zcrx_ifq_free(struct io_zcrx_ifq *ifq)
 {
 	io_shutdown_ifq(ifq);
+	if (ifq->if_rxq != -1)
+		io_close_zc_rxq(ifq);
 	if (ifq->area)
 		io_zcrx_free_area(ifq->area);
+	if (ifq->dev)
+		dev_put(ifq->dev);
 	io_free_rbuf_ring(ifq);
 	kfree(ifq);
 }
@@ -225,6 +268,17 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 	ifq->rq_entries = reg.rq_entries;
 	ifq->if_rxq = reg.if_rxq;
 
+	ret = -ENODEV;
+	rtnl_lock();
+	ifq->dev = dev_get_by_index(current->nsproxy->net_ns, reg.if_idx);
+	if (!ifq->dev)
+		goto err_rtnl_unlock;
+
+	ret = io_open_zc_rxq(ifq);
+	if (ret)
+		goto err_rtnl_unlock;
+	rtnl_unlock();
+
 	ring_sz = sizeof(struct io_uring);
 	rqes_sz = sizeof(struct io_uring_zcrx_rqe) * ifq->rq_entries;
 	reg.offsets.mmap_sz = ring_sz + rqes_sz;
@@ -233,15 +287,20 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 	reg.offsets.tail = offsetof(struct io_uring, tail);
 
 	if (copy_to_user(arg, &reg, sizeof(reg))) {
+		io_close_zc_rxq(ifq);
 		ret = -EFAULT;
 		goto err;
 	}
 	if (copy_to_user(u64_to_user_ptr(reg.area_ptr), &area, sizeof(area))) {
+		io_close_zc_rxq(ifq);
 		ret = -EFAULT;
 		goto err;
 	}
 	ctx->ifq = ifq;
 	return 0;
+
+err_rtnl_unlock:
+	rtnl_unlock();
 err:
 	io_zcrx_ifq_free(ifq);
 	return ret;
