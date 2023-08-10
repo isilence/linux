@@ -28,6 +28,7 @@
 #include "kbuf.h"
 #include "napi.h"
 #include "eventfd.h"
+#include "zcrx.h"
 
 #define IORING_MAX_RESTRICTIONS	(IORING_RESTRICTION_LAST + \
 				 IORING_REGISTER_LAST + IORING_OP_LAST)
@@ -510,6 +511,12 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 		if (nr_args != 1)
 			break;
 		ret = io_unregister_napi(ctx, arg);
+		break;
+	case IORING_REGISTER_ZCRX_IFQ:
+		ret = -EINVAL;
+		if (!arg || nr_args != 1)
+			break;
+		ret = io_register_zcrx_ifq(ctx, arg);
 		break;
 	default:
 		ret = -EINVAL;
