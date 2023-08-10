@@ -12,6 +12,7 @@
 
 #include "memmap.h"
 #include "kbuf.h"
+#include "zc_rx.h"
 
 static void *io_mem_alloc_compound(struct page **pages, int nr_pages,
 				   size_t size, gfp_t gfp)
@@ -223,6 +224,10 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t pgoff,
 		io_put_bl(ctx, bl);
 		return ptr;
 		}
+	case IORING_OFF_RQ_RING:
+		if (!ctx->ifq)
+			return ERR_PTR(-EINVAL);
+		return ctx->ifq->rq_ring;
 	}
 
 	return ERR_PTR(-EINVAL);
@@ -260,6 +265,9 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 						ctx->n_sqe_pages);
 	case IORING_OFF_PBUF_RING:
 		return io_pbuf_mmap(file, vma);
+	case IORING_OFF_RQ_RING:
+		return io_uring_mmap_pages(ctx, vma, ctx->ifq->rqe_pages,
+						ctx->ifq->n_rqe_pages);
 	}
 
 	return -EINVAL;
