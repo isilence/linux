@@ -5,6 +5,7 @@
 #include <linux/mm.h>
 #include <linux/io_uring.h>
 #include <linux/netdevice.h>
+#include <linux/nospec.h>
 #include <net/tcp.h>
 #include <net/af_unix.h>
 
@@ -39,6 +40,109 @@ static void io_free_rbuf_ring(struct io_zc_rx_ifq *ifq)
 	io_pages_unmap(ifq->rq_ring, &ifq->rqe_pages, &ifq->n_rqe_pages, true);
 	ifq->rq_ring = NULL;
 	ifq->rqes = NULL;
+}
+
+static int io_zc_rx_init_buf(struct page *page, struct io_zc_rx_buf *buf)
+{
+	memset(&buf->niov, 0, sizeof(buf->niov));
+	atomic_long_set(&buf->niov.pp_ref_count, 0);
+
+	buf->page = page;
+	get_page(page);
+	return 0;
+}
+
+static void io_zc_rx_free_buf(struct io_zc_rx_buf *buf)
+{
+	struct page *page = buf->page;
+
+	put_page(page);
+}
+
+static int io_zc_rx_init_pool(struct io_zc_rx_pool *pool,
+			     struct io_mapped_ubuf *imu)
+{
+	struct io_zc_rx_buf *buf;
+	struct page *page;
+	int i, ret;
+
+	for (i = 0; i < imu->nr_bvecs; i++) {
+		page = imu->bvec[i].bv_page;
+		buf = &pool->bufs[i];
+		ret = io_zc_rx_init_buf(page, buf);
+		if (ret)
+			goto err;
+
+		pool->freelist[i] = i;
+	}
+
+	pool->free_count = imu->nr_bvecs;
+	return 0;
+err:
+	while (i--) {
+		buf = &pool->bufs[i];
+		io_zc_rx_free_buf(buf);
+	}
+	return ret;
+}
+
+static int io_zc_rx_create_pool(struct io_ring_ctx *ctx,
+				struct io_zc_rx_ifq *ifq,
+				u16 id)
+{
+	struct io_mapped_ubuf *imu;
+	struct io_zc_rx_pool *pool;
+	int nr_pages;
+	int ret;
+
+	if (ifq->pool)
+		return -EFAULT;
+
+	if (unlikely(id >= ctx->nr_user_bufs))
+		return -EFAULT;
+	id = array_index_nospec(id, ctx->nr_user_bufs);
+	imu = ctx->user_bufs[id];
+	if (imu->ubuf & ~PAGE_MASK || imu->ubuf_end & ~PAGE_MASK)
+		return -EFAULT;
+
+	ret = -ENOMEM;
+	nr_pages = imu->nr_bvecs;
+	pool = kvmalloc(struct_size(pool, freelist, nr_pages), GFP_KERNEL);
+	if (!pool)
+		goto err;
+
+	pool->bufs = kvmalloc_array(nr_pages, sizeof(*pool->bufs), GFP_KERNEL);
+	if (!pool->bufs)
+		goto err_buf;
+
+	ret = io_zc_rx_init_pool(pool, imu);
+	if (ret)
+		goto err_map;
+
+	pool->ifq = ifq;
+	pool->pool_id = id;
+	pool->nr_bufs = nr_pages;
+	spin_lock_init(&pool->freelist_lock);
+	ifq->pool = pool;
+	return 0;
+err_map:
+	kvfree(pool->bufs);
+err_buf:
+	kvfree(pool);
+err:
+	return ret;
+}
+
+static void io_zc_rx_free_pool(struct io_zc_rx_pool *pool)
+{
+	struct io_zc_rx_buf *buf;
+
+	for (int i = 0; i < pool->nr_bufs; i++) {
+		buf = &pool->bufs[i];
+		io_zc_rx_free_buf(buf);
+	}
+	kvfree(pool->bufs);
+	kvfree(pool);
 }
 
 static struct io_zc_rx_ifq *io_zc_rx_ifq_alloc(struct io_ring_ctx *ctx)
@@ -78,7 +182,8 @@ static void io_shutdown_ifq(struct io_zc_rx_ifq *ifq)
 static void io_zc_rx_ifq_free(struct io_zc_rx_ifq *ifq)
 {
 	io_shutdown_ifq(ifq);
-
+	if (ifq->pool)
+		io_zc_rx_free_pool(ifq->pool);
 	io_free_rbuf_ring(ifq);
 	kfree(ifq);
 }
@@ -106,6 +211,10 @@ int io_register_zc_rx_ifq(struct io_ring_ctx *ctx,
 		return -ENOMEM;
 
 	ret = io_allocate_rbuf_ring(ifq, &reg);
+	if (ret)
+		goto err;
+
+	ret = io_zc_rx_create_pool(ctx, ifq, reg.region_id);
 	if (ret)
 		goto err;
 
