@@ -5,6 +5,7 @@
 #include <linux/mm.h>
 #include <linux/io_uring.h>
 #include <linux/netdevice.h>
+#include <linux/nospec.h>
 
 #include <uapi/linux/io_uring.h>
 
@@ -14,6 +15,11 @@
 #include "rsrc.h"
 
 typedef int (*bpf_op_t)(struct net_device *dev, struct netdev_bpf *bpf);
+
+static inline struct device *netdev2dev(struct net_device *dev)
+{
+	return dev->dev.parent;
+}
 
 static int __io_queue_mgmt(struct net_device *dev, struct io_zc_rx_ifq *ifq,
 			   u16 queue_id)
@@ -67,6 +73,128 @@ static void io_free_rbuf_ring(struct io_zc_rx_ifq *ifq)
 		folio_put(virt_to_folio(ifq->ring));
 }
 
+static int io_zc_rx_init_buf(struct device *dev, struct page *page,
+			     struct io_zc_rx_buf *buf)
+{
+	dma_addr_t addr = 0;
+
+	/* Skip dma setup for devices that don't do any DMA transfers */
+	if (dev) {
+		addr = dma_map_page_attrs(dev, page, 0, PAGE_SIZE,
+					  DMA_BIDIRECTIONAL,
+					  DMA_ATTR_SKIP_CPU_SYNC);
+		if (dma_mapping_error(dev, addr))
+			return -ENOMEM;
+	}
+
+	memset(&buf->niov, 0, sizeof(buf->niov));
+	atomic_long_set(&buf->niov.pp_ref_count, 0);
+	buf->niov.dma_addr = addr;
+	buf->page = page;
+	get_page(page);
+	return 0;
+}
+
+static void io_zc_rx_free_buf(struct device *dev, struct io_zc_rx_buf *buf)
+{
+	struct page *page = buf->page;
+
+	if (dev)
+		dma_unmap_page_attrs(dev, buf->niov.dma_addr, PAGE_SIZE,
+				     DMA_BIDIRECTIONAL,
+				     DMA_ATTR_SKIP_CPU_SYNC);
+	put_page(page);
+}
+
+static int io_zc_rx_map_pool(struct io_zc_rx_pool *pool,
+			     struct io_mapped_ubuf *imu,
+			     struct device *dev)
+{
+	struct io_zc_rx_buf *buf;
+	struct page *page;
+	int i, ret;
+
+	for (i = 0; i < imu->nr_bvecs; i++) {
+		page = imu->bvec[i].bv_page;
+		buf = &pool->bufs[i];
+		ret = io_zc_rx_init_buf(dev, page, buf);
+		if (ret)
+			goto err;
+
+		pool->freelist[i] = i;
+	}
+
+	pool->free_count = imu->nr_bvecs;
+	return 0;
+err:
+	while (i--) {
+		buf = &pool->bufs[i];
+		io_zc_rx_free_buf(dev, buf);
+	}
+	return ret;
+}
+
+static int io_zc_rx_create_pool(struct io_ring_ctx *ctx,
+				struct io_zc_rx_ifq *ifq,
+				u16 id)
+{
+	struct device *dev = netdev2dev(ifq->dev);
+	struct io_mapped_ubuf *imu;
+	struct io_zc_rx_pool *pool;
+	int nr_pages;
+	int ret;
+
+	if (ifq->pool)
+		return -EFAULT;
+
+	if (unlikely(id >= ctx->nr_user_bufs))
+		return -EFAULT;
+	id = array_index_nospec(id, ctx->nr_user_bufs);
+	imu = ctx->user_bufs[id];
+	if (imu->ubuf & ~PAGE_MASK || imu->ubuf_end & ~PAGE_MASK)
+		return -EFAULT;
+
+	ret = -ENOMEM;
+	nr_pages = imu->nr_bvecs;
+	pool = kvmalloc(struct_size(pool, freelist, nr_pages), GFP_KERNEL);
+	if (!pool)
+		goto err;
+
+	pool->bufs = kvmalloc_array(nr_pages, sizeof(*pool->bufs), GFP_KERNEL);
+	if (!pool->bufs)
+		goto err_buf;
+
+	ret = io_zc_rx_map_pool(pool, imu, dev);
+	if (ret)
+		goto err_map;
+
+	pool->ifq = ifq;
+	pool->pool_id = id;
+	pool->nr_bufs = nr_pages;
+	spin_lock_init(&pool->freelist_lock);
+	ifq->pool = pool;
+	return 0;
+err_map:
+	kvfree(pool->bufs);
+err_buf:
+	kvfree(pool);
+err:
+	return ret;
+}
+
+static void io_zc_rx_destroy_pool(struct io_zc_rx_pool *pool)
+{
+	struct device *dev = netdev2dev(pool->ifq->dev);
+	struct io_zc_rx_buf *buf;
+
+	for (int i = 0; i < pool->nr_bufs; i++) {
+		buf = &pool->bufs[i];
+		io_zc_rx_free_buf(dev, buf);
+	}
+	kvfree(pool->bufs);
+	kvfree(pool);
+}
+
 static struct io_zc_rx_ifq *io_zc_rx_ifq_alloc(struct io_ring_ctx *ctx)
 {
 	struct io_zc_rx_ifq *ifq;
@@ -105,6 +233,8 @@ static void io_zc_rx_ifq_free(struct io_zc_rx_ifq *ifq)
 {
 	io_shutdown_ifq(ifq);
 
+	if (ifq->pool)
+		io_zc_rx_destroy_pool(ifq->pool);
 	if (ifq->dev)
 		dev_put(ifq->dev);
 	io_free_rbuf_ring(ifq);
@@ -139,6 +269,10 @@ int io_register_zc_rx_ifq(struct io_ring_ctx *ctx,
 	ret = -ENODEV;
 	ifq->dev = dev_get_by_index(current->nsproxy->net_ns, reg.if_idx);
 	if (!ifq->dev)
+		goto err;
+
+	ret = io_zc_rx_create_pool(ctx, ifq, reg.region_id);
+	if (ret)
 		goto err;
 
 	ifq->rq_entries = reg.rq_entries;
@@ -221,7 +355,7 @@ int io_register_zc_rx_sock(struct io_ring_ctx *ctx,
 	if (!file)
 		return -EBADF;
 
-	if (io_file_need_scm(file)) {
+	if (!!unix_get_socket(file)) {
 		fput(file);
 		return -EBADF;
 	}
