@@ -79,6 +79,16 @@ struct io_sr_msg {
  */
 #define MULTISHOT_MAX_RETRY	32
 
+struct io_recvzc {
+	struct file			*file;
+	unsigned			len;
+	unsigned			done_io;
+	unsigned			msg_flags;
+	u16				flags;
+
+	u32				datalen;
+};
+
 static inline bool io_check_multishot(struct io_kiocb *req,
 				      unsigned int issue_flags)
 {
@@ -646,7 +656,7 @@ static inline bool io_recv_finish(struct io_kiocb *req, int *ret,
 	unsigned int cflags;
 
 	cflags = io_put_kbuf(req, issue_flags);
-	if (msg->msg_inq && msg->msg_inq != -1)
+	if (msg && msg->msg_inq && msg->msg_inq != -1)
 		cflags |= IORING_CQE_F_SOCK_NONEMPTY;
 
 	if (!(req->flags & REQ_F_APOLL_MULTISHOT)) {
@@ -669,7 +679,7 @@ static inline bool io_recv_finish(struct io_kiocb *req, int *ret,
 
 		io_recv_prep_retry(req);
 		/* Known not-empty or unknown state, retry */
-		if (cflags & IORING_CQE_F_SOCK_NONEMPTY || msg->msg_inq == -1) {
+		if (cflags & IORING_CQE_F_SOCK_NONEMPTY || (msg && msg->msg_inq == -1)) {
 			if (sr->nr_multishot_loops++ < MULTISHOT_MAX_RETRY)
 				return false;
 			/* mshot retries exceeded, force a requeue */
@@ -978,9 +988,8 @@ out_free:
 	return ret;
 }
 
-static __maybe_unused
-struct io_zc_rx_ifq *io_zc_verify_sock(struct io_kiocb *req,
-					struct socket *sock)
+static struct io_zc_rx_ifq *io_zc_verify_sock(struct io_kiocb *req,
+					      struct socket *sock)
 {
 	unsigned token = READ_ONCE(sock->zc_rx_idx);
 	unsigned ifq_idx = token >> IO_ZC_IFQ_IDX_OFFSET;
@@ -995,6 +1004,106 @@ struct io_zc_rx_ifq *io_zc_verify_sock(struct io_kiocb *req,
 	if (ifq->sockets[sock_idx] != req->file)
 		return NULL;
 	return ifq;
+}
+
+int io_recvzc_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
+{
+	struct io_recvzc *zc = io_kiocb_to_cmd(req, struct io_recvzc);
+	u64 recvzc_cmd;
+
+	recvzc_cmd = READ_ONCE(sqe->addr3);
+	zc->datalen = recvzc_cmd >> 32;
+	if (recvzc_cmd & 0xffff)
+		return -EINVAL;
+	if (!(req->ctx->flags & IORING_SETUP_DEFER_TASKRUN))
+		return -EINVAL;
+	if (unlikely(sqe->file_index || sqe->addr2))
+		return -EINVAL;
+
+	zc->len = READ_ONCE(sqe->len);
+	zc->flags = READ_ONCE(sqe->ioprio);
+	if (zc->flags & ~(RECVMSG_FLAGS))
+		return -EINVAL;
+	zc->msg_flags = READ_ONCE(sqe->msg_flags);
+	if (zc->msg_flags & MSG_DONTWAIT)
+		req->flags |= REQ_F_NOWAIT;
+	if (zc->msg_flags & MSG_ERRQUEUE)
+		req->flags |= REQ_F_CLEAR_POLLIN;
+	if (zc->flags & IORING_RECV_MULTISHOT) {
+		if (zc->msg_flags & MSG_WAITALL)
+			return -EINVAL;
+		if (req->opcode == IORING_OP_RECV && zc->len)
+			return -EINVAL;
+		req->flags |= REQ_F_APOLL_MULTISHOT;
+	}
+
+#ifdef CONFIG_COMPAT
+	if (req->ctx->compat)
+		zc->msg_flags |= MSG_CMSG_COMPAT;
+#endif
+	zc->done_io = 0;
+	return 0;
+}
+
+int io_recvzc(struct io_kiocb *req, unsigned int issue_flags)
+{
+	struct io_recvzc *zc = io_kiocb_to_cmd(req, struct io_recvzc);
+	struct socket *sock;
+	unsigned flags;
+	int ret, min_ret = 0;
+	bool force_nonblock = issue_flags & IO_URING_F_NONBLOCK;
+	struct io_zc_rx_ifq *ifq;
+
+	if (issue_flags & IO_URING_F_UNLOCKED)
+		return -EAGAIN;
+
+	if (!(req->flags & REQ_F_POLLED) &&
+	    (zc->flags & IORING_RECVSEND_POLL_FIRST))
+		return -EAGAIN;
+
+	sock = sock_from_file(req->file);
+	if (unlikely(!sock))
+		return -ENOTSOCK;
+	ifq = io_zc_verify_sock(req, sock);
+	if (!ifq)
+		return -EINVAL;
+
+retry_multishot:
+	flags = zc->msg_flags;
+	if (force_nonblock)
+		flags |= MSG_DONTWAIT;
+	if (flags & MSG_WAITALL)
+		min_ret = zc->len;
+
+	ret = io_zc_rx_recv(ifq, sock, zc->datalen, flags);
+	if (ret < min_ret) {
+		if (ret == -EAGAIN && force_nonblock) {
+			if (issue_flags & IO_URING_F_MULTISHOT)
+				return IOU_ISSUE_SKIP_COMPLETE;
+			return -EAGAIN;
+		}
+		if (ret > 0 && io_net_retry(sock, flags)) {
+			zc->len -= ret;
+			zc->done_io += ret;
+			req->flags |= REQ_F_PARTIAL_IO;
+			return -EAGAIN;
+		}
+		if (ret == -ERESTARTSYS)
+			ret = -EINTR;
+		req_set_fail(req);
+	} else if ((flags & MSG_WAITALL) && (flags & (MSG_TRUNC | MSG_CTRUNC))) {
+		req_set_fail(req);
+	}
+
+	if (ret > 0)
+		ret += zc->done_io;
+	else if (zc->done_io)
+		ret = zc->done_io;
+
+	if (!io_recv_finish(req, &ret, 0, ret <= 0, issue_flags))
+		goto retry_multishot;
+
+	return ret;
 }
 
 void io_send_zc_cleanup(struct io_kiocb *req)

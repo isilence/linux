@@ -6,6 +6,7 @@
 #include <linux/io_uring.h>
 #include <linux/netdevice.h>
 #include <linux/nospec.h>
+#include <net/tcp.h>
 #include <trace/events/page_pool.h>
 
 #include <uapi/linux/io_uring.h>
@@ -15,7 +16,19 @@
 #include "zc_rx.h"
 #include "rsrc.h"
 
+struct io_zc_rx_args {
+	struct io_zc_rx_ifq	*ifq;
+	struct socket		*sock;
+};
+
 typedef int (*bpf_op_t)(struct net_device *dev, struct netdev_bpf *bpf);
+
+static inline u32 io_zc_rx_cqring_entries(struct io_zc_rx_ifq *ifq)
+{
+	struct io_rbuf_ring *ring = ifq->ring;
+
+	return ifq->cached_cq_tail - READ_ONCE(ring->cq.head);
+}
 
 static inline struct device *netdev2dev(struct net_device *dev)
 {
@@ -398,7 +411,7 @@ static inline unsigned io_buf_pgid(struct io_zc_rx_pool *pool,
 	return buf - pool->bufs;
 }
 
-static __maybe_unused void io_zc_rx_get_buf_uref(struct io_zc_rx_buf *buf)
+static void io_zc_rx_get_buf_uref(struct io_zc_rx_buf *buf)
 {
 	atomic_long_add(IO_ZC_RX_UREF, &buf->niov.pp_ref_count);
 }
@@ -586,5 +599,226 @@ const struct memory_provider_ops io_uring_pp_zc_ops = {
 };
 EXPORT_SYMBOL(io_uring_pp_zc_ops);
 
+static inline struct io_uring_rbuf_cqe *io_zc_get_rbuf_cqe(struct io_zc_rx_ifq *ifq)
+{
+	struct io_uring_rbuf_cqe *cqe;
+	unsigned int cq_idx, queued, free, entries;
+	unsigned int mask = ifq->cq_entries - 1;
+
+	cq_idx = ifq->cached_cq_tail & mask;
+	smp_rmb();
+	queued = min(io_zc_rx_cqring_entries(ifq), ifq->cq_entries);
+	free = ifq->cq_entries - queued;
+	entries = min(free, ifq->cq_entries - cq_idx);
+	if (!entries)
+		return NULL;
+
+	cqe = &ifq->cqes[cq_idx];
+	ifq->cached_cq_tail++;
+	return cqe;
+}
+
+static int zc_rx_recv_frag(struct io_zc_rx_ifq *ifq, const skb_frag_t *frag,
+			   int off, int len, unsigned sock_idx)
+{
+	off += skb_frag_off(frag);
+
+	if (likely(skb_frag_is_net_iov(frag))) {
+		struct io_uring_rbuf_cqe *cqe;
+		struct io_zc_rx_buf *buf;
+		struct net_iov *niov;
+
+		niov = netmem_to_net_iov(frag->netmem);
+		if (niov->pp->mp_ops != &io_uring_pp_zc_ops ||
+		    niov->pp->mp_priv != ifq)
+			return -EFAULT;
+
+		cqe = io_zc_get_rbuf_cqe(ifq);
+		if (!cqe)
+			return -ENOBUFS;
+
+		buf = io_niov_to_buf(niov);
+		io_zc_rx_get_buf_uref(buf);
+
+		cqe->region = 0;
+		cqe->off = io_buf_pgid(ifq->pool, buf) * PAGE_SIZE + off;
+		cqe->len = len;
+		cqe->sock = sock_idx;
+		cqe->flags = 0;
+	} else {
+		return -EOPNOTSUPP;
+	}
+
+	return len;
+}
+
+static int
+zc_rx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
+	       unsigned int offset, size_t len)
+{
+	struct io_zc_rx_args *args = desc->arg.data;
+	struct io_zc_rx_ifq *ifq = args->ifq;
+	struct socket *sock = args->sock;
+	unsigned sock_idx = sock->zc_rx_idx & IO_ZC_IFQ_IDX_MASK;
+	struct sk_buff *frag_iter;
+	unsigned start, start_off;
+	int i, copy, end, off;
+	int ret = 0;
+
+	start = skb_headlen(skb);
+	start_off = offset;
+
+	if (offset < start)
+		return -EOPNOTSUPP;
+
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		const skb_frag_t *frag;
+
+		if (WARN_ON(start > offset + len))
+			return -EFAULT;
+
+		frag = &skb_shinfo(skb)->frags[i];
+		end = start + skb_frag_size(frag);
+
+		if (offset < end) {
+			copy = end - offset;
+			if (copy > len)
+				copy = len;
+
+			off = offset - start;
+			ret = zc_rx_recv_frag(ifq, frag, off, copy, sock_idx);
+			if (ret < 0)
+				goto out;
+
+			offset += ret;
+			len -= ret;
+			if (len == 0 || ret != copy)
+				goto out;
+		}
+		start = end;
+	}
+
+	skb_walk_frags(skb, frag_iter) {
+		if (WARN_ON(start > offset + len))
+			return -EFAULT;
+
+		end = start + frag_iter->len;
+		if (offset < end) {
+			copy = end - offset;
+			if (copy > len)
+				copy = len;
+
+			off = offset - start;
+			ret = zc_rx_recv_skb(desc, frag_iter, off, copy);
+			if (ret < 0)
+				goto out;
+
+			offset += ret;
+			len -= ret;
+			if (len == 0 || ret != copy)
+				goto out;
+		}
+		start = end;
+	}
+
+out:
+	smp_store_release(&ifq->ring->cq.tail, ifq->cached_cq_tail);
+	if (offset == start_off)
+		return ret;
+	return offset - start_off;
+}
+
+static int io_zc_rx_tcp_read(struct io_zc_rx_ifq *ifq, struct sock *sk)
+{
+	struct io_zc_rx_args args = {
+		.ifq = ifq,
+		.sock = sk->sk_socket,
+	};
+	read_descriptor_t rd_desc = {
+		.count = 1,
+		.arg.data = &args,
+	};
+
+	return tcp_read_sock(sk, &rd_desc, zc_rx_recv_skb);
+}
+
+static int io_zc_rx_tcp_recvmsg(struct io_zc_rx_ifq *ifq, struct sock *sk,
+				unsigned int recv_limit,
+				int flags, int *addr_len)
+{
+	size_t used = 0;
+	int ret = 0;
+	long timeo;
+
+	lock_sock(sk);
+
+	timeo = sock_rcvtimeo(sk, flags & MSG_DONTWAIT);
+	while (recv_limit) {
+		ret = io_zc_rx_tcp_read(ifq, sk);
+		if (ret < 0)
+			break;
+		if (!ret) {
+			if (used)
+				break;
+			if (sock_flag(sk, SOCK_DONE))
+				break;
+			if (sk->sk_err) {
+				ret = sock_error(sk);
+				break;
+			}
+			if (sk->sk_shutdown & RCV_SHUTDOWN)
+				break;
+			if (sk->sk_state == TCP_CLOSE) {
+				ret = -ENOTCONN;
+				break;
+			}
+			if (!timeo) {
+				ret = -EAGAIN;
+				break;
+			}
+			if (!skb_queue_empty(&sk->sk_receive_queue))
+				break;
+			sk_wait_data(sk, &timeo, NULL);
+			if (signal_pending(current)) {
+				ret = sock_intr_errno(timeo);
+				break;
+			}
+			continue;
+		}
+		recv_limit -= ret;
+		used += ret;
+
+		if (!timeo)
+			break;
+		release_sock(sk);
+		lock_sock(sk);
+
+		if (sk->sk_err || sk->sk_state == TCP_CLOSE ||
+		    (sk->sk_shutdown & RCV_SHUTDOWN) ||
+		    signal_pending(current))
+			break;
+	}
+	release_sock(sk);
+	return used ? used : ret;
+}
+
+int io_zc_rx_recv(struct io_zc_rx_ifq *ifq, struct socket *sock,
+		  unsigned int limit, unsigned int flags)
+{
+	struct sock *sk = sock->sk;
+	const struct proto *prot;
+	int addr_len = 0;
+
+	if (flags & MSG_ERRQUEUE)
+		return -EOPNOTSUPP;
+
+	prot = READ_ONCE(sk->sk_prot);
+	if (prot->recvmsg != tcp_recvmsg)
+		return -EPROTONOSUPPORT;
+
+	sock_rps_record_flow(sk);
+
+	return io_zc_rx_tcp_recvmsg(ifq, sk, limit, flags, &addr_len);
+}
 
 #endif

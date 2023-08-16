@@ -35,6 +35,7 @@
 #include "rw.h"
 #include "waitid.h"
 #include "futex.h"
+#include "zc_rx.h"
 
 static int io_no_issue(struct io_kiocb *req, unsigned int issue_flags)
 {
@@ -474,6 +475,18 @@ const struct io_issue_def io_issue_defs[] = {
 		.prep			= io_install_fixed_fd_prep,
 		.issue			= io_install_fixed_fd,
 	},
+	[IORING_OP_RECV_ZC] = {
+		.needs_file		= 1,
+		.unbound_nonreg_file	= 1,
+		.pollin			= 1,
+		.ioprio			= 1,
+#if defined(CONFIG_NET)
+		.prep			= io_recvzc_prep,
+		.issue			= io_recvzc,
+#else
+		.prep			= io_eopnotsupp_prep,
+#endif
+	},
 };
 
 const struct io_cold_def io_cold_defs[] = {
@@ -711,6 +724,9 @@ const struct io_cold_def io_cold_defs[] = {
 	},
 	[IORING_OP_FIXED_FD_INSTALL] = {
 		.name			= "FIXED_FD_INSTALL",
+	},
+	[IORING_OP_RECV_ZC] = {
+		.name			= "RECV_ZC",
 	},
 };
 
