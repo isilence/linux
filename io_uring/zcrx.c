@@ -36,9 +36,11 @@ static void __io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
 		dma_addr_t dma;
 
 		dma = page_pool_get_dma_addr_netmem(net_iov_to_netmem(niov));
-		dma_unmap_page_attrs(ifq->dev, dma, PAGE_SIZE,
-				     DMA_FROM_DEVICE, IO_DMA_ATTR);
-		net_mp_niov_set_dma_addr(niov, 0);
+		if (dma && ifq->dev) {
+			dma_unmap_page_attrs(ifq->dev, dma, PAGE_SIZE, DMA_FROM_DEVICE,
+					     IO_DMA_ATTR);
+			net_mp_niov_set_dma_addr(niov, 0);
+		}
 	}
 }
 
@@ -54,12 +56,14 @@ static int io_zcrx_map_area(struct io_zcrx_ifq *ifq, struct io_zcrx_area *area)
 
 	for (i = 0; i < area->nia.num_niovs; i++) {
 		struct net_iov *niov = &area->nia.niovs[i];
-		dma_addr_t dma;
+		dma_addr_t dma = 0;
 
-		dma = dma_map_page_attrs(ifq->dev, area->pages[i], 0, PAGE_SIZE,
-					 DMA_FROM_DEVICE, IO_DMA_ATTR);
-		if (dma_mapping_error(ifq->dev, dma))
-			break;
+		if (ifq->dev) {
+			dma = dma_map_page_attrs(ifq->dev, area->pages[i], 0, PAGE_SIZE,
+						 DMA_FROM_DEVICE, IO_DMA_ATTR);
+			if (dma_mapping_error(ifq->dev, dma))
+				break;
+		}
 		if (net_mp_niov_set_dma_addr(niov, dma)) {
 			dma_unmap_page_attrs(ifq->dev, dma, PAGE_SIZE,
 					     DMA_FROM_DEVICE, IO_DMA_ATTR);
@@ -386,9 +390,10 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 		goto err;
 
 	ifq->dev = ifq->netdev->dev.parent;
-	if (!ifq->dev)
-		return -EOPNOTSUPP;
-	get_device(ifq->dev);
+	// if (!ifq->dev)
+	// 	return -EOPNOTSUPP;
+	if (ifq->dev)
+		get_device(ifq->dev);
 
 	ret = io_zcrx_map_area(ifq, ifq->area);
 	if (ret)
@@ -619,14 +624,12 @@ static int io_pp_zc_init(struct page_pool *pp)
 
 	if (WARN_ON_ONCE(!ifq))
 		return -EINVAL;
-	if (WARN_ON_ONCE(ifq->dev != pp->p.dev))
-		return -EINVAL;
-	if (WARN_ON_ONCE(!pp->dma_map))
-		return -EOPNOTSUPP;
+	// if (WARN_ON_ONCE(!pp->dma_map))
+	// 	return -EOPNOTSUPP;
 	if (pp->p.order != 0)
 		return -EOPNOTSUPP;
-	if (pp->p.dma_dir != DMA_FROM_DEVICE)
-		return -EOPNOTSUPP;
+	// if (pp->p.dma_dir != DMA_FROM_DEVICE)
+	// 	return -EOPNOTSUPP;
 
 	percpu_ref_get(&ifq->ctx->refs);
 	return 0;
@@ -949,3 +952,19 @@ int io_zcrx_recv(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 	sock_rps_record_flow(sk);
 	return io_zcrx_tcp_recvmsg(req, ifq, sk, flags, issue_flags);
 }
+
+#include <linux/io_uring/net.h>
+
+struct page *io_iov_get_page(netmem_ref netmem)
+{
+	struct net_iov *niov;
+
+	if (WARN_ON_ONCE(!netmem_is_net_iov(netmem)))
+		return NULL;
+	niov = netmem_to_net_iov(netmem);
+
+	if (WARN_ON_ONCE(niov->pp->mp_ops != &io_uring_pp_zc_ops))
+		return  NULL;
+	return io_zcrx_iov_page(niov);
+}
+EXPORT_SYMBOL_GPL(io_iov_get_page);
