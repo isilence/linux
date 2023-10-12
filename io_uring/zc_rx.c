@@ -576,8 +576,13 @@ static int io_pp_zc_init(struct page_pool *pp)
 		return -EINVAL;
 	if (!pp->p.napi)
 		return -EINVAL;
-	if (!(pp->p.flags & PP_FLAG_DMA_SYNC_DEV))
+	/* veth doesn't need dma sync */
+	if (!netdev2dev(ifq->dev)) {
+		if (pp->p.flags & PP_FLAG_DMA_SYNC_DEV)
+			return -EINVAL;
+	} else if (!(pp->p.flags & PP_FLAG_DMA_SYNC_DEV)) {
 		return -EINVAL;
+	}
 
 	percpu_ref_get(&ifq->ctx->refs);
 	ifq->pp = pp;
