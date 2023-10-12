@@ -836,3 +836,19 @@ int io_zcrx_recv(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 	sock_rps_record_flow(sk);
 	return io_zcrx_tcp_recvmsg(req, ifq, sk, flags, issue_flags);
 }
+
+#include <linux/io_uring/net.h>
+
+struct page *io_iov_get_page(netmem_ref netmem)
+{
+	struct net_iov *niov;
+
+	if (WARN_ON_ONCE(!netmem_is_net_iov(netmem)))
+		return NULL;
+	niov = netmem_to_net_iov(netmem);
+
+	if (WARN_ON_ONCE(niov->pp->mp_ops != &io_uring_pp_zc_ops))
+		return  NULL;
+	return io_zcrx_iov_page(niov);
+}
+EXPORT_SYMBOL_GPL(io_iov_get_page);

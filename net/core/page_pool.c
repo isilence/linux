@@ -1176,15 +1176,12 @@ int page_pool_mp_init_paged_area(struct page_pool *pool,
 	netmem_ref netmem;
 	int i, ret = 0;
 
-	if (!pool->dma_map)
-		return -EOPNOTSUPP;
-
 	for (i = 0; i < area->num_niovs; i++) {
 		niov = &area->niovs[i];
 		netmem = net_iov_to_netmem(niov);
 
 		page_pool_set_pp_info(pool, netmem);
-		if (!page_pool_dma_map_page(pool, netmem, pages[i])) {
+		if (pool->dma_map && !page_pool_dma_map_page(pool, netmem, pages[i])) {
 			ret = -EINVAL;
 			goto err_unmap_dma;
 		}
