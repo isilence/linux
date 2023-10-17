@@ -16,6 +16,7 @@
 #include "net.h"
 #include "notif.h"
 #include "rsrc.h"
+#include "zc_rx.h"
 
 #if defined(CONFIG_NET)
 struct io_shutdown {
@@ -971,6 +972,25 @@ out_free:
 		goto retry_multishot;
 
 	return ret;
+}
+
+static __maybe_unused
+struct io_zc_rx_ifq *io_zc_verify_sock(struct io_kiocb *req,
+					struct socket *sock)
+{
+	unsigned token = READ_ONCE(sock->zc_rx_idx);
+	unsigned ifq_idx = token >> IO_ZC_IFQ_IDX_OFFSET;
+	unsigned sock_idx = token & IO_ZC_IFQ_IDX_MASK;
+	struct io_zc_rx_ifq *ifq;
+
+	if (ifq_idx)
+		return NULL;
+	ifq = req->ctx->ifq;
+	if (!ifq || sock_idx >= ifq->nr_sockets)
+		return NULL;
+	if (ifq->sockets[sock_idx] != req->file)
+		return NULL;
+	return ifq;
 }
 
 void io_send_zc_cleanup(struct io_kiocb *req)
