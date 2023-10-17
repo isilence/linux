@@ -126,6 +126,8 @@ struct socket {
 	const struct proto_ops	*ops; /* Might change with IPV6_ADDRFORM or MPTCP. */
 
 	struct socket_wq	wq;
+
+	unsigned		zc_rx_idx;
 };
 
 /*

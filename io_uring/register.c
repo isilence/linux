@@ -518,6 +518,12 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			break;
 		ret = io_register_zcrx_ifq(ctx, arg);
 		break;
+	case IORING_REGISTER_ZC_RX_SOCK:
+		ret = -EINVAL;
+		if (!arg || nr_args != 1)
+			break;
+		ret = io_register_zcrx_sock(ctx, arg);
+		break;
 	default:
 		ret = -EINVAL;
 		break;

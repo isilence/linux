@@ -599,6 +599,7 @@ enum io_uring_register_op {
 
 	/* register a netdev hw rx queue for zerocopy */
 	IORING_REGISTER_ZC_RX_IFQ		= 29,
+	IORING_REGISTER_ZC_RX_SOCK		= 30,
 
 	/* this goes last */
 	IORING_REGISTER_LAST,
@@ -843,6 +844,12 @@ struct io_uring_zcrx_ifq_reg {
 	__u64	area_ptr; /* pointer to struct io_uring_zcrx_area_reg */
 	struct io_uring_zcrx_offsets offsets;
 	__u64	__resv[3];
+};
+
+struct io_uring_zcrx_sock_reg {
+	__u32	sockfd;
+	__u32	zc_rx_ifq_idx;
+	__u32	__resv[2];
 };
 
 #ifdef __cplusplus

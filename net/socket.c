@@ -637,6 +637,7 @@ struct socket *sock_alloc(void)
 
 	sock = SOCKET_I(inode);
 
+	sock->zc_rx_idx = 0;
 	inode->i_ino = get_next_ino();
 	inode->i_mode = S_IFSOCK | S_IRWXUGO;
 	inode->i_uid = current_fsuid();
