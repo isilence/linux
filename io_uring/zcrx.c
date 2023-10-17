@@ -51,8 +51,16 @@ static struct io_zcrx_ifq *io_zcrx_ifq_alloc(struct io_ring_ctx *ctx)
 	return ifq;
 }
 
+static void io_shutdown_ifq(struct io_zcrx_ifq *ifq)
+{
+	if (!ifq)
+		return;
+}
+
 static void io_zcrx_ifq_free(struct io_zcrx_ifq *ifq)
 {
+	io_shutdown_ifq(ifq);
+
 	io_free_rbuf_ring(ifq);
 	kfree(ifq);
 }
@@ -128,6 +136,13 @@ void io_unregister_zcrx_ifqs(struct io_ring_ctx *ctx)
 
 	ctx->ifq = NULL;
 	io_zcrx_ifq_free(ifq);
+}
+
+void io_shutdown_zcrx_ifqs(struct io_ring_ctx *ctx)
+{
+	lockdep_assert_held(&ctx->uring_lock);
+
+	io_shutdown_ifq(ctx->ifq);
 }
 
 #endif
