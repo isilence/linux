@@ -47,6 +47,8 @@ bool sk_busy_loop_end(void *p, unsigned long start_time);
 void napi_busy_loop(unsigned int napi_id,
 		    bool (*loop_end)(void *, unsigned long),
 		    void *loop_end_arg, bool prefer_busy_poll, u16 budget);
+void napi_execute(struct napi_struct *napi,
+		  void (*cb)(void *), void *cb_arg);
 
 void napi_busy_loop_rcu(unsigned int napi_id,
 			bool (*loop_end)(void *, unsigned long),
@@ -61,6 +63,11 @@ static inline unsigned long net_busy_loop_on(void)
 static inline bool sk_can_busy_loop(struct sock *sk)
 {
 	return false;
+}
+
+static inline void napi_execute(struct napi_struct *napi,
+				void (*cb)(void *), void *cb_arg)
+{
 }
 
 #endif /* CONFIG_NET_RX_BUSY_POLL */
