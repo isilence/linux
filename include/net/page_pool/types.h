@@ -227,6 +227,7 @@ netmem_ref page_pool_alloc_frag_netmem(struct page_pool *pool,
 struct page_pool *page_pool_create(const struct page_pool_params *params);
 struct page_pool *page_pool_create_percpu(const struct page_pool_params *params,
 					  int cpuid);
+void page_pool_set_pp_info(struct page_pool *pool, netmem_ref netmem);
 
 struct xdp_mem_info;
 
