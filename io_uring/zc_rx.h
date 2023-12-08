@@ -10,6 +10,9 @@
 #define IO_ZC_IFQ_IDX_OFFSET		16
 #define IO_ZC_IFQ_IDX_MASK		((1U << IO_ZC_IFQ_IDX_OFFSET) - 1)
 
+#define IO_ZC_RX_UREF			0x10000
+#define IO_ZC_RX_KREF_MASK		(IO_ZC_RX_UREF - 1)
+
 struct io_zc_rx_pool {
 	struct io_zc_rx_ifq	*ifq;
 	struct io_zc_rx_buf	*bufs;
@@ -26,10 +29,12 @@ struct io_zc_rx_ifq {
 	struct io_ring_ctx		*ctx;
 	struct net_device		*dev;
 	struct io_zc_rx_pool		*pool;
+	struct page_pool		*pp;
 
 	struct io_uring			*rq_ring;
 	struct io_uring_rbuf_rqe 	*rqes;
 	u32				rq_entries;
+	u32				cached_rq_head;
 
 	unsigned short			n_rqe_pages;
 	struct page			**rqe_pages;
