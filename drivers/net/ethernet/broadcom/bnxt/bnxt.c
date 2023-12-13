@@ -55,6 +55,7 @@
 #include <net/page_pool/helpers.h>
 #include <linux/align.h>
 #include <net/netdev_queues.h>
+#include <linux/io_uring/net.h>
 
 #include "bnxt_hsi.h"
 #include "bnxt.h"
@@ -875,6 +876,25 @@ static inline u8 *__bnxt_alloc_rx_frag(struct bnxt *bp, dma_addr_t *mapping,
 	return data;
 }
 
+static inline struct page *bnxt_get_real_page(struct page *page)
+{
+	struct io_zc_rx_buf *buf;
+
+	if (page_is_page_pool_iov(page)) {
+		buf = container_of(page_to_page_pool_iov(page),
+				struct io_zc_rx_buf, ppiov);
+		page = buf->page;
+	}
+	return page;
+}
+
+static inline void *bnxt_get_page_address(struct page *frag)
+{
+	struct page *page = bnxt_get_real_page(frag);
+
+	return page_address(page);
+}
+
 int bnxt_alloc_rx_data(struct bnxt *bp, struct bnxt_rx_ring_info *rxr,
 		       u16 prod, gfp_t gfp)
 {
@@ -892,7 +912,7 @@ int bnxt_alloc_rx_data(struct bnxt *bp, struct bnxt_rx_ring_info *rxr,
 
 		mapping += bp->rx_dma_offset;
 		rx_buf->data = page;
-		rx_buf->data_ptr = page_address(page) + offset + bp->rx_offset;
+		rx_buf->data_ptr = bnxt_get_page_address(page) + offset + bp->rx_offset;
 	} else {
 		u8 *data = __bnxt_alloc_rx_frag(bp, &mapping, gfp);
 
@@ -954,8 +974,9 @@ static inline int bnxt_alloc_rx_page(struct bnxt *bp,
 
 	if (PAGE_SIZE <= BNXT_RX_PAGE_SIZE)
 		page = __bnxt_alloc_rx_page(bp, &mapping, rxr, &offset, gfp);
-	else
+	else {
 		page = __bnxt_alloc_rx_64k_page(bp, &mapping, rxr, gfp, &offset);
+	}
 
 	if (!page)
 		return -ENOMEM;
@@ -1079,6 +1100,7 @@ static struct sk_buff *bnxt_rx_multi_page_skb(struct bnxt *bp,
 		return NULL;
 	}
 	skb_mark_for_recycle(skb);
+
 	skb_reserve(skb, bp->rx_offset);
 	__skb_put(skb, len);
 
@@ -1118,7 +1140,7 @@ static struct sk_buff *bnxt_rx_page_skb(struct bnxt *bp,
 	}
 
 	skb_mark_for_recycle(skb);
-	off = (void *)data_ptr - page_address(page);
+	off = (void *)data_ptr - bnxt_get_page_address(page);
 	skb_add_rx_frag(skb, 0, page, off, len, BNXT_RX_PAGE_SIZE);
 	memcpy(skb->data - NET_IP_ALIGN, data_ptr - NET_IP_ALIGN,
 	       payload + NET_IP_ALIGN);
@@ -2032,7 +2054,6 @@ static int bnxt_rx_pkt(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 				goto next_rx;
 			}
 		} else {
-			skb = bnxt_xdp_build_skb(bp, skb, agg_bufs, rxr->page_pool, &xdp, rxcmp1);
 			if (!skb) {
 				/* we should be able to free the old skb here */
 				bnxt_xdp_buff_frags_free(rxr, &xdp);
@@ -3402,7 +3423,8 @@ static void bnxt_free_rx_rings(struct bnxt *bp)
 }
 
 static int bnxt_alloc_rx_page_pool(struct bnxt *bp,
-				   struct bnxt_rx_ring_info *rxr)
+				   struct bnxt_rx_ring_info *rxr,
+				   int qid)
 {
 	struct page_pool_params pp = { 0 };
 
@@ -3415,6 +3437,13 @@ static int bnxt_alloc_rx_page_pool(struct bnxt *bp,
 	pp.dma_dir = bp->rx_dir;
 	pp.max_len = PAGE_SIZE;
 	pp.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV;
+
+	if (bp->iou_ifq && qid == bp->iou_qid) {
+		pp.mp_priv = bp->iou_ifq;
+		pp.memory_provider = PP_MP_IOU_ZCRX;
+		pp.max_len = PAGE_SIZE;
+		pp.flags = 0;
+	}
 
 	rxr->page_pool = page_pool_create(&pp);
 	if (IS_ERR(rxr->page_pool)) {
@@ -3442,7 +3471,7 @@ static int bnxt_alloc_rx_rings(struct bnxt *bp)
 
 		ring = &rxr->rx_ring_struct;
 
-		rc = bnxt_alloc_rx_page_pool(bp, rxr);
+		rc = bnxt_alloc_rx_page_pool(bp, rxr, i);
 		if (rc)
 			return rc;
 
@@ -14345,6 +14374,36 @@ void bnxt_print_device_info(struct bnxt *bp)
 		    (long)pci_resource_start(bp->pdev, 0), bp->dev->dev_addr);
 
 	pcie_print_link_status(bp->pdev);
+}
+
+int bnxt_zc_rx(struct bnxt *bp, struct netdev_bpf *xdp)
+{
+	unsigned ifq_idx = xdp->zc_rx.queue_id;
+
+	if (ifq_idx >= bp->rx_nr_rings)
+		return -EINVAL;
+	if (PAGE_SIZE != BNXT_RX_PAGE_SIZE)
+		return -EINVAL;
+
+	bnxt_rtnl_lock_sp(bp);
+	if (!!bp->iou_ifq == !!xdp->zc_rx.ifq) {
+		bnxt_rtnl_unlock_sp(bp);
+		return -EINVAL;
+	}
+	if (netif_running(bp->dev)) {
+		int rc;
+
+		bnxt_ulp_stop(bp);
+		bnxt_close_nic(bp, true, false);
+
+		bp->iou_qid = ifq_idx;
+		bp->iou_ifq = xdp->zc_rx.ifq;
+
+		rc = bnxt_open_nic(bp, true, false);
+		bnxt_ulp_start(bp, rc);
+	}
+	bnxt_rtnl_unlock_sp(bp);
+	return 0;
 }
 
 static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
