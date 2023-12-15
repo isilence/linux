@@ -3498,7 +3498,7 @@ int skb_pp_cow_data(struct page_pool *pool, struct sk_buff **pskb,
 		    unsigned int headroom);
 int skb_cow_data_for_xdp(struct page_pool *pool, struct sk_buff **pskb,
 			 struct bpf_prog *prog);
-bool napi_pp_put_page(struct page *page, bool napi_safe);
+bool napi_pp_put_page(netmem_ref netmem, bool napi_safe);
 
 static inline void
 napi_frag_unref(skb_frag_t *frag, bool recycle, bool napi_safe)
@@ -3506,7 +3506,7 @@ napi_frag_unref(skb_frag_t *frag, bool recycle, bool napi_safe)
 	struct page *page = skb_frag_page(frag);
 
 #ifdef CONFIG_PAGE_POOL
-	if (recycle && napi_pp_put_page(page, napi_safe))
+	if (recycle && napi_pp_put_page(page_to_netmem(page), napi_safe))
 		return;
 #endif
 	put_page(page);
