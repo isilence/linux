@@ -134,6 +134,7 @@ struct memory_provider_ops {
 	void (*destroy)(struct page_pool *pool);
 	netmem_ref (*alloc_pages)(struct page_pool *pool, gfp_t gfp);
 	bool (*release_page)(struct page_pool *pool, netmem_ref netmem);
+	void (*scrub)(struct page_pool *pool);
 };
 
 struct pp_memory_provider_params {
