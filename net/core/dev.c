@@ -2156,7 +2156,7 @@ void netdev_unbind_dmabuf(struct netdev_dmabuf_binding *binding)
 		list_del(&binding->list);
 
 	xa_for_each(&binding->bound_rxq_list, xa_idx, rxq) {
-		if (rxq->binding == binding) {
+		if (false /* rxq->binding == binding */) {
 			/* We hold the rtnl_lock while binding/unbinding
 			 * dma-buf, so we can't race with another thread that
 			 * is also modifying this value. However, the driver
@@ -2164,7 +2164,7 @@ void netdev_unbind_dmabuf(struct netdev_dmabuf_binding *binding)
 			 * rx-queues. WRITE_ONCE() here to match the
 			 * READ_ONCE() in the driver.
 			 */
-			WRITE_ONCE(rxq->binding, NULL);
+			// WRITE_ONCE(rxq->binding, NULL);
 
 			rxq_idx = get_netdev_rx_queue_index(rxq);
 
@@ -2186,11 +2186,10 @@ int netdev_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
 
 	if (rxq_idx >= dev->num_rx_queues)
 		return -ERANGE;
+	return -EEXIST;
 
 	rxq = __netif_get_rx_queue(dev, rxq_idx);
 
-	if (rxq->binding)
-		return -EEXIST;
 
 	err = xa_alloc(&binding->bound_rxq_list, &xa_idx, rxq, xa_limit_32b,
 		       GFP_KERNEL);
@@ -2202,7 +2201,7 @@ int netdev_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
 	 * the driver may read this config while it's creating its * rx-queues.
 	 * WRITE_ONCE() here to match the READ_ONCE() in the driver.
 	 */
-	WRITE_ONCE(rxq->binding, binding);
+	// WRITE_ONCE(rxq->binding, binding);
 
 	err = netdev_restart_rx_queue(dev, rxq_idx);
 	if (err)
@@ -2212,7 +2211,7 @@ int netdev_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
 
 err_xa_erase:
 	xa_erase(&binding->bound_rxq_list, xa_idx);
-	WRITE_ONCE(rxq->binding, NULL);
+	// WRITE_ONCE(rxq->binding, NULL);
 
 	return err;
 }

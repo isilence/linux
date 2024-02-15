@@ -182,7 +182,6 @@ static int page_pool_init(struct page_pool *pool,
 			  const struct page_pool_params *params,
 			  int cpuid)
 {
-	struct netdev_dmabuf_binding *binding = NULL;
 	unsigned int ring_qsize = 1024; /* Default */
 	int err;
 
@@ -256,12 +255,9 @@ static int page_pool_init(struct page_pool *pool,
 	/* Driver calling page_pool_create() also call page_pool_destroy() */
 	refcount_set(&pool->user_cnt, 1);
 
-	if (pool->p.queue)
-		binding = READ_ONCE(pool->p.queue->binding);
-
-	if (binding) {
-		pool->mp_ops = &dmabuf_devmem_ops;
-		pool->mp_priv = binding;
+	if (pool->p.queue && pool->p.queue->pp_ops) {
+		pool->mp_ops = pool->p.queue->pp_ops;
+		pool->mp_priv = pool->p.queue->pp_private;
 	}
 
 	if (pool->mp_ops) {
