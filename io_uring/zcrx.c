@@ -111,6 +111,7 @@ static int io_zcrx_create_area(struct io_ring_ctx *ctx,
 		memset(niov, 0, sizeof(*niov));
 		atomic_long_set(&niov->pp_ref_count, 0);
 		niov->owner = &area->nia;
+		page_pool_set_dma_addr_netmem(net_iov_to_netmem(niov), 0);
 		area->freelist[i] = i;
 	}
 
@@ -257,12 +258,28 @@ static bool io_zcrx_put_niov_uref(struct net_iov *niov)
 	return io_zcrx_niov_put(niov, IO_ZC_RX_UREF);
 }
 
+static inline void io_zc_sync_for_device(struct page_pool *pp,
+					 netmem_ref netmem)
+{
+#if defined(CONFIG_HAS_DMA) && defined(CONFIG_DMA_NEED_SYNC)
+	if (pp->dma_sync && dma_dev_need_sync(pp->p.dev)) {
+		dma_addr_t dma_addr = page_pool_get_dma_addr_netmem(netmem);
+
+		dma_sync_single_range_for_device(pp->p.dev, dma_addr,
+						 pp->p.offset, pp->p.max_len,
+						 pp->p.dma_dir);
+	}
+#endif
+}
+
 static inline void io_zc_add_pp_cache(struct page_pool *pp,
 				      struct net_iov *niov)
 {
 	netmem_ref netmem = net_iov_to_netmem(niov);
 
 	page_pool_set_pp_info(pp, netmem);
+	/* we require ->dma_sync from the page pool */
+	io_zc_sync_for_device(pp, netmem);
 	pp->alloc.cache[pp->alloc.count++] = netmem;
 }
 
@@ -397,9 +414,53 @@ static void io_pp_zc_scrub(struct page_pool *pp)
 	}
 }
 
+#define IO_PP_DMA_ATTRS (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
+
+static int io_pp_map_area(struct io_zcrx_area *area, struct page_pool *pp)
+{
+	struct net_iov_area *nia = &area->nia;
+	struct net_iov *niov;
+	struct page *page;
+	netmem_ref netmem;
+	int i, ret = 0;
+
+	for (i = 0; i < nia->num_niovs; i++) {
+		page = area->pages[i];
+		niov = &nia->niovs[i];
+		netmem = net_iov_to_netmem(niov);
+
+		if (unlikely(!page_pool_dma_map_page(pp, netmem, page))) {
+			ret = -ENOMEM;
+			goto err_unmap_dma;
+		}
+	}
+
+	return 0;
+
+err_unmap_dma:
+	while (i--) {
+		netmem = net_iov_to_netmem(&nia->niovs[i]);
+		page_pool_release_page_dma(pp, netmem);
+	}
+
+	return ret;
+}
+
+static void io_pp_unmap_area(struct io_zcrx_area *area, struct page_pool *pp)
+{
+	int i;
+
+	for (i = 0; i < area->nia.num_niovs; i++) {
+		struct net_iov *niov = &area->nia.niovs[i];
+
+		page_pool_release_page_dma(pp, net_iov_to_netmem(niov));
+	}
+}
+
 static int io_pp_zc_init(struct page_pool *pp)
 {
 	struct io_zcrx_ifq *ifq = pp->mp_priv;
+	int ret;
 
 	if (!ifq)
 		return -EINVAL;
@@ -409,10 +470,12 @@ static int io_pp_zc_init(struct page_pool *pp)
 		return -EINVAL;
 	if (!pp->p.napi->napi_id)
 		return -EINVAL;
-	if (pp->dma_map)
-		return -EOPNOTSUPP;
-	if (pp->dma_sync)
-		return -EOPNOTSUPP;
+
+	if (pp->dma_map) {
+		ret = io_pp_map_area(ifq->area, pp);
+		if (ret)
+			return ret;
+	}
 
 	ifq->napi_id = pp->p.napi->napi_id;
 	percpu_ref_get(&ifq->ctx->refs);
@@ -424,6 +487,9 @@ static void io_pp_zc_destroy(struct page_pool *pp)
 {
 	struct io_zcrx_ifq *ifq = pp->mp_priv;
 	struct io_zcrx_area *area = ifq->area;
+
+	if (pp->dma_map)
+		io_pp_unmap_area(ifq->area, pp);
 
 	ifq->pp = NULL;
 	ifq->napi_id = 0;
