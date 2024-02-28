@@ -443,10 +443,8 @@ static inline netmem_ref io_zc_buf_to_netmem(struct io_zc_rx_buf *buf)
 static inline void io_zc_add_pp_cache(struct page_pool *pp,
 				      struct io_zc_rx_buf *buf)
 {
-	netmem_ref netmem = io_zc_buf_to_netmem(buf);
-
-	page_pool_set_pp_info(pp, netmem);
-	pp->alloc.cache[pp->alloc.count++] = netmem;
+	page_pool_put_unrefed_net_iov_in_cache(pp, &buf->niov);
+	page_pool_set_pp_info(pp, io_zc_buf_to_netmem(buf));
 }
 
 static inline u32 io_zc_rx_rqring_entries(struct io_zc_rx_ifq *ifq)

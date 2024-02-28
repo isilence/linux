@@ -229,6 +229,9 @@ struct page_pool *page_pool_create_percpu(const struct page_pool_params *params,
 					  int cpuid);
 void page_pool_set_pp_info(struct page_pool *pool, netmem_ref netmem);
 
+void page_pool_put_unrefed_net_iov_in_cache(struct page_pool *pool,
+					    struct net_iov *niov);
+
 struct xdp_mem_info;
 
 #ifdef CONFIG_PAGE_POOL

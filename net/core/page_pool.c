@@ -841,6 +841,21 @@ void page_pool_put_page_bulk(struct page_pool *pool, void **data,
 }
 EXPORT_SYMBOL(page_pool_put_page_bulk);
 
+/* Should only be used by page pool providers and from within the napi
+ * context. The caller is responsible for ensuring that there is free
+ * space in the cache.
+ */
+void page_pool_put_unrefed_net_iov_in_cache(struct page_pool *pool,
+					    struct net_iov *niov)
+{
+	netmem_ref netmem = net_iov_to_netmem(niov);
+
+	if (pool->p.flags & PP_FLAG_DMA_SYNC_DEV)
+		page_pool_dma_sync_for_device(pool, netmem, -1);
+
+	page_pool_recycle_in_cache(netmem, pool);
+}
+
 static netmem_ref page_pool_drain_frag(struct page_pool *pool,
 				       netmem_ref netmem)
 {
