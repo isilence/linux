@@ -9,6 +9,7 @@
 #include <net/tcp.h>
 #include <net/af_unix.h>
 #include <trace/events/page_pool.h>
+#include <net/page_pool/helpers.h>
 
 #include <uapi/linux/io_uring.h>
 
@@ -47,6 +48,7 @@ static int io_zc_rx_init_buf(struct page *page, struct io_zc_rx_buf *buf)
 {
 	memset(&buf->niov, 0, sizeof(buf->niov));
 	atomic_long_set(&buf->niov.pp_ref_count, 0);
+	page_pool_set_dma_addr_netmem(net_iov_to_netmem(&buf->niov), 0);
 
 	buf->page = page;
 	get_page(page);
@@ -355,12 +357,25 @@ static inline netmem_ref io_zc_buf_to_netmem(struct io_zc_rx_buf *buf)
 	return net_iov_to_netmem(&buf->niov);
 }
 
+static inline void io_zc_sync_for_device(struct page_pool *pp,
+					 netmem_ref netmem)
+{
+	if (pp->p.flags & PP_FLAG_DMA_SYNC_DEV) {
+		dma_addr_t dma_addr = page_pool_get_dma_addr_netmem(netmem);
+
+		dma_sync_single_range_for_device(pp->p.dev, dma_addr,
+						 pp->p.offset, pp->p.max_len,
+						 pp->p.dma_dir);
+	}
+}
+
 static inline void io_zc_add_pp_cache(struct page_pool *pp,
 				      struct io_zc_rx_buf *buf)
 {
 	netmem_ref netmem = io_zc_buf_to_netmem(buf);
 
 	page_pool_set_pp_info(pp, netmem);
+	io_zc_sync_for_device(pp, netmem);
 	pp->alloc.cache[pp->alloc.count++] = netmem;
 }
 
@@ -480,9 +495,71 @@ static void io_pp_zc_scrub(struct page_pool *pp)
 	}
 }
 
+#define IO_PP_DMA_ATTRS (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
+
+static void io_pp_unmap_buf(struct io_zc_rx_buf *buf, struct page_pool *pp)
+{
+	netmem_ref netmem = net_iov_to_netmem(&buf->niov);
+	dma_addr_t dma = page_pool_get_dma_addr_netmem(netmem);
+
+	dma_unmap_page_attrs(pp->p.dev, dma, PAGE_SIZE << pp->p.order,
+			     pp->p.dma_dir, IO_PP_DMA_ATTRS);
+	page_pool_set_dma_addr_netmem(netmem, 0);
+}
+
+static int io_pp_map_buf(struct io_zc_rx_buf *buf, struct page_pool *pp)
+{
+	netmem_ref netmem = net_iov_to_netmem(&buf->niov);
+	dma_addr_t dma_addr;
+	int ret;
+
+	dma_addr = dma_map_page_attrs(pp->p.dev, buf->page, 0,
+				      PAGE_SIZE << pp->p.order, pp->p.dma_dir,
+				      IO_PP_DMA_ATTRS);
+	ret = dma_mapping_error(pp->p.dev, dma_addr);
+	if (ret)
+		return ret;
+
+	if (WARN_ON_ONCE(page_pool_set_dma_addr_netmem(netmem, dma_addr))) {
+		dma_unmap_page_attrs(pp->p.dev, dma_addr,
+				     PAGE_SIZE << pp->p.order, pp->p.dma_dir,
+				     IO_PP_DMA_ATTRS);
+		return -EFAULT;
+	}
+
+	io_zc_sync_for_device(pp, netmem);
+	return 0;
+}
+
+static int io_pp_map_pool(struct io_zc_rx_pool *pool, struct page_pool *pp)
+{
+	int i, ret = 0;
+
+	for (i = 0; i < pool->nr_bufs; i++) {
+		ret = io_pp_map_buf(&pool->bufs[i], pp);
+		if (ret)
+			break;
+	}
+
+	if (ret) {
+		while (i--)
+			io_pp_unmap_buf(&pool->bufs[i], pp);
+	}
+	return ret;
+}
+
+static void io_pp_unmap_pool(struct io_zc_rx_pool *pool, struct page_pool *pp)
+{
+	int i;
+
+	for (i = 0; i < pool->nr_bufs; i++)
+		io_pp_unmap_buf(&pool->bufs[i], pp);
+}
+
 static int io_pp_zc_init(struct page_pool *pp)
 {
 	struct io_zc_rx_ifq *ifq = pp->mp_priv;
+	int ret;
 
 	if (!ifq)
 		return -EINVAL;
@@ -490,10 +567,12 @@ static int io_pp_zc_init(struct page_pool *pp)
 		return -EINVAL;
 	if (!pp->p.napi)
 		return -EINVAL;
-	if (pp->p.flags & PP_FLAG_DMA_MAP)
-		return -EOPNOTSUPP;
-	if (pp->p.flags & PP_FLAG_DMA_SYNC_DEV)
-		return -EOPNOTSUPP;
+
+	if (pp->p.flags & PP_FLAG_DMA_MAP) {
+		ret = io_pp_map_pool(ifq->pool, pp);
+		if (ret)
+			return ret;
+	}
 
 	percpu_ref_get(&ifq->ctx->refs);
 	ifq->pp = pp;
@@ -504,6 +583,9 @@ static void io_pp_zc_destroy(struct page_pool *pp)
 {
 	struct io_zc_rx_ifq *ifq = pp->mp_priv;
 	struct io_zc_rx_pool *pool = ifq->pool;
+
+	if (pp->p.flags & PP_FLAG_DMA_MAP)
+		io_pp_unmap_pool(ifq->pool, pp);
 
 	ifq->pp = NULL;
 
