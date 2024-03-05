@@ -38,6 +38,7 @@ struct io_zcrx_ifq {
 
 	struct io_mapped_region		region;
 	netdevice_tracker		netdev_tracker;
+	unsigned			napi_id;
 };
 
 #if defined(CONFIG_IO_URING_ZCRX)
