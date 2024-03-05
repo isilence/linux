@@ -6,10 +6,13 @@
 #include <linux/io_uring.h>
 #include <linux/netdevice.h>
 #include <linux/nospec.h>
+
+#include <net/page_pool/helpers.h>
 #include <net/tcp.h>
 #include <net/af_unix.h>
+#include <net/rps.h>
+
 #include <trace/events/page_pool.h>
-#include <net/page_pool/helpers.h>
 
 #include <uapi/linux/io_uring.h>
 
@@ -18,6 +21,12 @@
 #include "memmap.h"
 #include "zc_rx.h"
 #include "rsrc.h"
+
+struct io_zc_rx_args {
+	struct io_kiocb		*req;
+	struct io_zc_rx_ifq	*ifq;
+	struct socket		*sock;
+};
 
 static int io_allocate_rbuf_ring(struct io_zc_rx_ifq *ifq,
 				 struct io_uring_zc_rx_ifq_reg *reg)
@@ -334,7 +343,7 @@ static inline unsigned io_buf_pgid(struct io_zc_rx_pool *pool,
 	return buf - pool->bufs;
 }
 
-static __maybe_unused void io_zc_rx_get_buf_uref(struct io_zc_rx_buf *buf)
+static void io_zc_rx_get_buf_uref(struct io_zc_rx_buf *buf)
 {
 	atomic_long_add(IO_ZC_RX_UREF, &buf->niov.pp_ref_count);
 }
@@ -603,5 +612,170 @@ const struct memory_provider_ops io_uring_pp_zc_ops = {
 };
 EXPORT_SYMBOL(io_uring_pp_zc_ops);
 
+static bool zc_rx_queue_cqe(struct io_kiocb *req, struct io_zc_rx_buf *buf,
+			   struct io_zc_rx_ifq *ifq, int off, int len)
+{
+	struct io_uring_rbuf_cqe *rcqe;
+	struct io_uring_cqe *cqe;
+
+	if (!io_defer_get_uncommited_cqe(req->ctx, &cqe))
+		return false;
+
+	cqe->user_data = req->cqe.user_data;
+	cqe->res = 0;
+	cqe->flags = IORING_CQE_F_MORE;
+
+	rcqe = (struct io_uring_rbuf_cqe *)(cqe + 1);
+	rcqe->region = 0;
+	rcqe->off = io_buf_pgid(ifq->pool, buf) * PAGE_SIZE + off;
+	rcqe->len = len;
+	memset(rcqe->__pad, 0, sizeof(rcqe->__pad));
+	return true;
+}
+
+static int zc_rx_recv_frag(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
+			   const skb_frag_t *frag, int off, int len)
+{
+	off += skb_frag_off(frag);
+
+	if (likely(skb_frag_is_net_iov(frag))) {
+		struct io_zc_rx_buf *buf;
+		struct net_iov *niov;
+
+		niov = netmem_to_net_iov(frag->netmem);
+		if (niov->pp->mp_ops != &io_uring_pp_zc_ops ||
+		    niov->pp->mp_priv != ifq)
+			return -EFAULT;
+
+		buf = io_niov_to_buf(niov);
+		if (!zc_rx_queue_cqe(req, buf, ifq, off, len))
+			return -ENOSPC;
+		io_zc_rx_get_buf_uref(buf);
+	} else {
+		return -EOPNOTSUPP;
+	}
+
+	return len;
+}
+
+static int
+zc_rx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
+	       unsigned int offset, size_t len)
+{
+	struct io_zc_rx_args *args = desc->arg.data;
+	struct io_zc_rx_ifq *ifq = args->ifq;
+	struct io_kiocb *req = args->req;
+	struct sk_buff *frag_iter;
+	unsigned start, start_off;
+	int i, copy, end, off;
+	int ret = 0;
+
+	start = skb_headlen(skb);
+	start_off = offset;
+
+	if (offset < start)
+		return -EOPNOTSUPP;
+
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		const skb_frag_t *frag;
+
+		if (WARN_ON(start > offset + len))
+			return -EFAULT;
+
+		frag = &skb_shinfo(skb)->frags[i];
+		end = start + skb_frag_size(frag);
+
+		if (offset < end) {
+			copy = end - offset;
+			if (copy > len)
+				copy = len;
+
+			off = offset - start;
+			ret = zc_rx_recv_frag(req, ifq, frag, off, copy);
+			if (ret < 0)
+				goto out;
+
+			offset += ret;
+			len -= ret;
+			if (len == 0 || ret != copy)
+				goto out;
+		}
+		start = end;
+	}
+
+	skb_walk_frags(skb, frag_iter) {
+		if (WARN_ON(start > offset + len))
+			return -EFAULT;
+
+		end = start + frag_iter->len;
+		if (offset < end) {
+			copy = end - offset;
+			if (copy > len)
+				copy = len;
+
+			off = offset - start;
+			ret = zc_rx_recv_skb(desc, frag_iter, off, copy);
+			if (ret < 0)
+				goto out;
+
+			offset += ret;
+			len -= ret;
+			if (len == 0 || ret != copy)
+				goto out;
+		}
+		start = end;
+	}
+
+out:
+	if (offset == start_off)
+		return ret;
+	return offset - start_off;
+}
+
+static int io_zc_rx_tcp_recvmsg(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
+				struct sock *sk, int flags)
+{
+	struct io_zc_rx_args args = {
+		.req = req,
+		.ifq = ifq,
+		.sock = sk->sk_socket,
+	};
+	read_descriptor_t rd_desc = {
+		.count = 1,
+		.arg.data = &args,
+	};
+	int ret;
+
+	lock_sock(sk);
+	ret = tcp_read_sock(sk, &rd_desc, zc_rx_recv_skb);
+	if (ret <= 0) {
+		if (ret < 0 || sock_flag(sk, SOCK_DONE))
+			goto out;
+		if (sk->sk_err)
+			ret = sock_error(sk);
+		else if (sk->sk_shutdown & RCV_SHUTDOWN)
+			goto out;
+		else if (sk->sk_state == TCP_CLOSE)
+			ret = -ENOTCONN;
+		else
+			ret = -EAGAIN;
+	}
+out:
+	release_sock(sk);
+	return ret;
+}
+
+int io_zc_rx_recv(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
+		  struct socket *sock, unsigned int flags)
+{
+	struct sock *sk = sock->sk;
+	const struct proto *prot = READ_ONCE(sk->sk_prot);
+
+	if (prot->recvmsg != tcp_recvmsg)
+		return -EPROTONOSUPPORT;
+
+	sock_rps_record_flow(sk);
+	return io_zc_rx_tcp_recvmsg(req, ifq, sk, flags);
+}
 
 #endif

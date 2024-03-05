@@ -53,6 +53,8 @@ void io_unregister_zc_rx_ifqs(struct io_ring_ctx *ctx);
 void io_shutdown_zc_rx_ifqs(struct io_ring_ctx *ctx);
 int io_register_zc_rx_sock(struct io_ring_ctx *ctx,
 			   struct io_uring_zc_rx_sock_reg __user *arg);
+int io_zc_rx_recv(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
+		  struct socket *sock, unsigned int flags);
 #else
 static inline int io_register_zc_rx_ifq(struct io_ring_ctx *ctx,
 			  struct io_uring_zc_rx_ifq_reg __user *arg)
@@ -70,6 +72,15 @@ static inline int io_register_zc_rx_sock(struct io_ring_ctx *ctx,
 {
 	return -EOPNOTSUPP;
 }
+
+static inline int io_zc_rx_recv(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
+				struct socket *sock, unsigned int flags)
+{
+	return -EOPNOTSUPP;
+}
 #endif
+
+int io_recvzc(struct io_kiocb *req, unsigned int issue_flags);
+int io_recvzc_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe);
 
 #endif
