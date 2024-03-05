@@ -8,6 +8,7 @@
 #include <linux/nospec.h>
 
 #include <net/page_pool/helpers.h>
+#include <net/busy_poll.h>
 #include <net/tcp.h>
 #include <net/af_unix.h>
 #include <net/rps.h>
@@ -26,6 +27,11 @@ struct io_zc_rx_args {
 	struct io_kiocb		*req;
 	struct io_zc_rx_ifq	*ifq;
 	struct socket		*sock;
+};
+
+struct io_zc_refill_data {
+	struct io_zc_rx_ifq *ifq;
+	struct io_zc_rx_buf *buf;
 };
 
 static int io_allocate_rbuf_ring(struct io_zc_rx_ifq *ifq,
@@ -612,6 +618,34 @@ const struct memory_provider_ops io_uring_pp_zc_ops = {
 };
 EXPORT_SYMBOL(io_uring_pp_zc_ops);
 
+static void io_napi_refill(void *data)
+{
+	struct io_zc_refill_data *rd = data;
+	struct io_zc_rx_ifq *ifq = rd->ifq;
+	netmem_ref netmem;
+
+	if (WARN_ON_ONCE(!ifq->pp))
+		return;
+
+	netmem = page_pool_alloc_netmem(ifq->pp, GFP_ATOMIC | __GFP_NOWARN);
+	if (!netmem)
+		return;
+	if (WARN_ON_ONCE(!netmem_is_net_iov(netmem)))
+		return;
+
+	rd->buf = io_niov_to_buf(netmem_to_net_iov(netmem));
+}
+
+static struct io_zc_rx_buf *io_zc_get_buf_task_safe(struct io_zc_rx_ifq *ifq)
+{
+	struct io_zc_refill_data rd = {
+		.ifq = ifq,
+	};
+
+	napi_execute(ifq->pp->p.napi, io_napi_refill, &rd);
+	return rd.buf;
+}
+
 static bool zc_rx_queue_cqe(struct io_kiocb *req, struct io_zc_rx_buf *buf,
 			   struct io_zc_rx_ifq *ifq, int off, int len)
 {
@@ -633,6 +667,42 @@ static bool zc_rx_queue_cqe(struct io_kiocb *req, struct io_zc_rx_buf *buf,
 	return true;
 }
 
+static ssize_t zc_rx_copy_chunk(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
+				void *data, unsigned int offset, size_t len)
+{
+	size_t copy_size, copied = 0;
+	struct io_zc_rx_buf *buf;
+	int ret = 0, off = 0;
+	u8 *vaddr;
+
+	do {
+		buf = io_zc_get_buf_task_safe(ifq);
+		if (!buf) {
+			ret = -ENOMEM;
+			break;
+		}
+
+		vaddr = kmap_local_page(buf->page);
+		copy_size = min_t(size_t, PAGE_SIZE, len);
+		memcpy(vaddr, data + offset, copy_size);
+		kunmap_local(vaddr);
+
+		if (!zc_rx_queue_cqe(req, buf, ifq, off, copy_size)) {
+			napi_pp_put_page(net_iov_to_netmem(&buf->niov));
+			return -ENOSPC;
+		}
+
+		io_zc_rx_get_buf_uref(buf);
+		napi_pp_put_page(net_iov_to_netmem(&buf->niov));
+
+		offset += copy_size;
+		len -= copy_size;
+		copied += copy_size;
+	} while (offset < len);
+
+	return copied ? copied : ret;
+}
+
 static int zc_rx_recv_frag(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
 			   const skb_frag_t *frag, int off, int len)
 {
@@ -652,7 +722,22 @@ static int zc_rx_recv_frag(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
 			return -ENOSPC;
 		io_zc_rx_get_buf_uref(buf);
 	} else {
-		return -EOPNOTSUPP;
+		struct page *page = skb_frag_page(frag);
+		u32 p_off, p_len, t, copied = 0;
+		u8 *vaddr;
+		int ret = 0;
+
+		skb_frag_foreach_page(frag, off, len,
+				      page, p_off, p_len, t) {
+			vaddr = kmap_local_page(page);
+			ret = zc_rx_copy_chunk(req, ifq, vaddr, p_off, p_len);
+			kunmap_local(vaddr);
+
+			if (ret < 0)
+				return copied ? copied : ret;
+			copied += ret;
+		}
+		len = copied;
 	}
 
 	return len;
@@ -666,15 +751,29 @@ zc_rx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 	struct io_zc_rx_ifq *ifq = args->ifq;
 	struct io_kiocb *req = args->req;
 	struct sk_buff *frag_iter;
-	unsigned start, start_off;
+	unsigned start, start_off = offset;
 	int i, copy, end, off;
 	int ret = 0;
 
-	start = skb_headlen(skb);
-	start_off = offset;
+	if (unlikely(offset < skb_headlen(skb))) {
+		ssize_t copied;
+		size_t to_copy;
 
-	if (offset < start)
-		return -EOPNOTSUPP;
+		to_copy = min_t(size_t, skb_headlen(skb) - offset, len);
+		copied = zc_rx_copy_chunk(req, ifq, skb->data, offset, to_copy);
+		if (copied < 0) {
+			ret = copied;
+			goto out;
+		}
+		offset += copied;
+		len -= copied;
+		if (!len)
+			goto out;
+		if (offset != skb_headlen(skb))
+			goto out;
+	}
+
+	start = skb_headlen(skb);
 
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		const skb_frag_t *frag;
