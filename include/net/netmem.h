@@ -20,6 +20,8 @@ DECLARE_STATIC_KEY_FALSE(page_pool_mem_providers);
  */
 #define NET_IOV 0x01UL
 
+// NOTE: this struct mirrors that of struct page such that it can be converted
+// back and forth
 struct net_iov {
 	unsigned long __unused_padding;
 	unsigned long pp_magic;

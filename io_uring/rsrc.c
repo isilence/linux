@@ -1005,6 +1005,7 @@ int io_sqe_buffers_register(struct io_ring_ctx *ctx, void __user *arg,
 			break;
 		}
 
+		printk("----- io_sqe_buffers_register: i=%d, iov_base=%px, iov_len=%d\n", i, iov.iov_base, iov.iov_len);
 		ret = io_sqe_buffer_register(ctx, &iov, &ctx->user_bufs[i],
 					     &last_hpage);
 		if (ret)

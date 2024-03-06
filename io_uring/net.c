@@ -1054,26 +1054,38 @@ int io_recvzc(struct io_kiocb *req, unsigned int issue_flags)
 	if (!ifq)
 		return -EINVAL;
 
+	printk("----- io_recvzc: calling io_zc_rx_recv\n");
 	ret = io_zc_rx_recv(req, ifq, sock, zc->msg_flags | MSG_DONTWAIT);
+	printk("----- io_recvzc: ret=%d\n", ret);
 	if (unlikely(ret <= 0)) {
 		if (ret == -EAGAIN) {
-			if (issue_flags & IO_URING_F_MULTISHOT)
+			if (issue_flags & IO_URING_F_MULTISHOT) {
+				printk("----- io_recvzc: ret <= 0, return IOU_ISSUE_SKIP_COMPLETE\n");
 				return IOU_ISSUE_SKIP_COMPLETE;
+			}
+			printk("----- io_recvzc: ret <= 0, return EAGAIN\n");
 			return -EAGAIN;
 		}
 		if (ret == -ERESTARTSYS)
 			ret = -EINTR;
 
+		printk("----- io_recvzc: fail req\n");
 		req_set_fail(req);
 		io_req_set_res(req, ret, 0);
 
-		if (issue_flags & IO_URING_F_MULTISHOT)
+		if (issue_flags & IO_URING_F_MULTISHOT) {
+			printk("----- io_recvzc: return IOU_STOP_MULTISHOT\n");
 			return IOU_STOP_MULTISHOT;
+		}
+		printk("----- io_recvzc: return IOU_OK\n");
 		return IOU_OK;
 	}
 
-	if (issue_flags & IO_URING_F_MULTISHOT)
+	if (issue_flags & IO_URING_F_MULTISHOT) {
+		printk("----- io_recvzc: return IOU_ISSUE_SKIP_COMPLETE\n");
 		return IOU_ISSUE_SKIP_COMPLETE;
+	}
+	printk("----- io_recvzc: return EAGAIN\n");
 	return -EAGAIN;
 }
 

@@ -23,6 +23,7 @@
 #include <linux/netdevice.h>
 #include <linux/genalloc.h>
 #include <net/devmem.h>
+#include <linux/io_uring/net.h>
 
 #include <trace/events/page_pool.h>
 
@@ -547,27 +548,35 @@ static noinline netmem_ref __page_pool_alloc_pages_slow(struct page_pool *pool,
 /* For using page_pool replace: alloc_pages() API calls, but provide
  * synchronization guarantee for allocation side.
  */
-netmem_ref page_pool_alloc_netmem(struct page_pool *pool, gfp_t gfp)
+netmem_ref page_pool_alloc_netmem(struct page_pool *pool, gfp_t gfp, bool log)
 {
 	netmem_ref netmem;
 
 	/* Fast-path: Get a page from cache */
 	netmem = __page_pool_get_cached(pool);
-	if (netmem)
+	if (netmem) {
+		if (log)
+			printk("----- page_pool_alloc_netmem: got from cache\n");
 		return netmem;
+	}
 
 	/* Slow-path: cache empty, do real allocation */
-	if (static_branch_unlikely(&page_pool_mem_providers) && pool->mp_ops)
+	if (static_branch_unlikely(&page_pool_mem_providers) && pool->mp_ops) {
+		if (log)
+			printk("----- page_pool_alloc_netmem: got from mp_ops->alloc_pages()\n");
 		netmem = pool->mp_ops->alloc_pages(pool, gfp);
-	else
+	} else {
+		if (log)
+			printk("----- page_pool_alloc_netmem: got from __page_pool_alloc_pages_slow()\n");
 		netmem = __page_pool_alloc_pages_slow(pool, gfp);
+	}
 	return netmem;
 }
 EXPORT_SYMBOL(page_pool_alloc_netmem);
 
 struct page *page_pool_alloc_pages(struct page_pool *pool, gfp_t gfp)
 {
-	return netmem_to_page(page_pool_alloc_netmem(pool, gfp));
+	return netmem_to_page(page_pool_alloc_netmem(pool, gfp, false));
 }
 EXPORT_SYMBOL(page_pool_alloc_pages);
 
@@ -677,6 +686,15 @@ static bool page_pool_recycle_in_cache(netmem_ref netmem,
 		return false;
 	}
 
+	if (netmem_is_net_iov(netmem)) {
+		struct io_zc_rx_buf *buf;
+		struct net_iov *niov;
+
+		niov = netmem_to_net_iov(netmem);
+		buf = container_of(niov, struct io_zc_rx_buf, niov);
+		printk(KERN_INFO "----- page_pool_recycle_in_cache: recycling page, physical address: %#llx\n", (unsigned long long)page_to_phys(buf->page));
+	}
+
 	/* Caller MUST have verified/know (page_ref_count(page) == 1) */
 	pool->alloc.cache[pool->alloc.count++] = netmem;
 	recycle_stat_inc(pool, cached);
@@ -713,6 +731,9 @@ __page_pool_put_page(struct page_pool *pool, netmem_ref netmem,
 	 */
 	if (likely(__page_pool_page_can_be_recycled(netmem))) {
 		/* Read barrier done in page_ref_count / READ_ONCE */
+		if (netmem_is_net_iov(netmem)) {
+			//printk("----- __page_pool_put_page: called on net_iov\n");
+		}
 
 		if (pool->p.flags & PP_FLAG_DMA_SYNC_DEV)
 			page_pool_dma_sync_for_device(pool, netmem,
@@ -909,7 +930,7 @@ netmem_ref page_pool_alloc_frag_netmem(struct page_pool *pool,
 	}
 
 	if (!netmem) {
-		netmem = page_pool_alloc_netmem(pool, gfp);
+		netmem = page_pool_alloc_netmem(pool, gfp, false);
 		if (unlikely(!netmem)) {
 			pool->frag_page = 0;
 			return 0;

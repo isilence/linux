@@ -115,6 +115,7 @@ static int io_zc_rx_init_pool(struct io_zc_rx_pool *pool,
 	for (i = 0; i < imu->nr_bvecs; i++) {
 		page = imu->bvec[i].bv_page;
 		buf = &pool->bufs[i];
+		//printk(KERN_INFO "io_zc_rx_init_pool: Page %d address: %#llx\n", i, (unsigned long long)page_address(page));
 		ret = io_zc_rx_init_buf(page, buf);
 		if (ret)
 			goto err;
@@ -510,8 +511,10 @@ static netmem_ref io_pp_zc_alloc_pages(struct page_pool *pp, gfp_t gfp)
 		goto out_return;
 
 	io_zc_rx_refill_slow(pp, ifq);
-	if (!pp->alloc.count)
+	if (!pp->alloc.count) {
+		printk("----- io_pp_zc_alloc_pages: pp->alloc.count == 0, returning NULL\n");
 		return 0;
+	}
 out_return:
 	return pp->alloc.cache[--pp->alloc.count];
 }
@@ -527,6 +530,7 @@ static bool io_pp_zc_release_page(struct page_pool *pp, netmem_ref netmem)
 
 	niov = netmem_to_net_iov(netmem);
 	buf = io_niov_to_buf(niov);
+	//printk(KERN_INFO "----- io_pp_zc_release_page: releasing page, physical address: %#llx\n", (unsigned long long)page_to_phys(buf->page));
 
 	if (io_zc_rx_buf_put(buf, 1))
 		io_zc_rx_recycle_buf(ifq->pool, buf);
@@ -570,6 +574,8 @@ static int io_pp_map_buf(struct io_zc_rx_buf *buf, struct page_pool *pp)
 	dma_addr_t dma_addr;
 	int ret;
 
+	set_page_private(buf->page, (unsigned long)((u64)0xface << 48));
+	// NOTE: we mapping buf->page to get dmr_addr, then set that in netmem->dma_addr
 	dma_addr = dma_map_page_attrs(pp->p.dev, buf->page, 0,
 				      PAGE_SIZE << pp->p.order, pp->p.dma_dir,
 				      IO_PP_DMA_ATTRS);
@@ -583,6 +589,7 @@ static int io_pp_map_buf(struct io_zc_rx_buf *buf, struct page_pool *pp)
 				     IO_PP_DMA_ATTRS);
 		return -EFAULT;
 	}
+	//printk(KERN_INFO "----- io_pp_map_buf: address: %#llx, dma_addr_t: %#llx, netmem refcnt addr=%px\n", (unsigned long long)page_address(buf->page), (unsigned long long)dma_addr, &buf->niov.pp_ref_count);
 
 	io_zc_sync_for_device(pp, netmem);
 	return 0;
@@ -592,6 +599,7 @@ static int io_pp_map_pool(struct io_zc_rx_pool *pool, struct page_pool *pp)
 {
 	int i, ret = 0;
 
+	printk("----- io_pp_map_pool: io_zc_rx_pool kernel virtual addr=%px\n", pool);
 	for (i = 0; i < pool->nr_bufs; i++) {
 		ret = io_pp_map_buf(&pool->bufs[i], pp);
 		if (ret)
@@ -625,6 +633,7 @@ static int io_pp_zc_init(struct page_pool *pp)
 	if (!pp->p.napi)
 		return -EINVAL;
 
+	printk("----- io_pp_zc_init: flags=%x\n", pp->p.flags);
 	if (pp->p.flags & PP_FLAG_DMA_MAP) {
 		ret = io_pp_map_pool(ifq->pool, pp);
 		if (ret)
@@ -666,14 +675,20 @@ static void io_napi_refill(void *data)
 	struct io_zc_rx_ifq *ifq = rd->ifq;
 	netmem_ref netmem;
 
-	if (WARN_ON_ONCE(!ifq->pp))
+	if (WARN_ON_ONCE(!ifq->pp)) {
+		printk("----- io_napi_refill: no pp\n");
 		return;
+	}
 
-	netmem = page_pool_alloc_netmem(ifq->pp, GFP_ATOMIC | __GFP_NOWARN);
-	if (!netmem)
+	netmem = page_pool_alloc_netmem(ifq->pp, GFP_ATOMIC | __GFP_NOWARN, true);
+	if (!netmem) {
+		printk("----- io_napi_refill: cannot alloc netmem\n");
 		return;
-	if (WARN_ON_ONCE(!netmem_is_net_iov(netmem)))
+	}
+	if (WARN_ON_ONCE(!netmem_is_net_iov(netmem))) {
+		printk("----- io_napi_refill: allocated netmem is not net_iov\n");
 		return;
+	}
 
 	rd->buf = io_niov_to_buf(netmem_to_net_iov(netmem));
 }
@@ -750,6 +765,7 @@ static int zc_rx_recv_frag(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
 {
 	off += skb_frag_off(frag);
 
+	// NOTE: checking frag->netmem is a net_iov
 	if (likely(skb_frag_is_net_iov(frag))) {
 		struct io_zc_rx_buf *buf;
 		struct net_iov *niov;
@@ -760,6 +776,7 @@ static int zc_rx_recv_frag(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
 			return -EFAULT;
 
 		buf = io_niov_to_buf(niov);
+		printk(KERN_INFO "----- zc_rx_recv_frag: got skb frag that is a net_iov, page physical address: %#llx, private=0x%lx\n", (unsigned long long)page_to_phys(buf->page), page_private(buf->page));
 		if (!zc_rx_queue_cqe(req, buf, ifq, off, len))
 			return -ENOSPC;
 		io_zc_rx_get_buf_uref(buf);
@@ -768,6 +785,7 @@ static int zc_rx_recv_frag(struct io_kiocb *req, struct io_zc_rx_ifq *ifq,
 		u32 p_off, p_len, t, copied = 0;
 		u8 *vaddr;
 		int ret = 0;
+		printk(KERN_INFO "----- zc_rx_recv_frag: got skb frag that is _NOT_ net_iov!\n");
 
 		skb_frag_foreach_page(frag, off, len,
 				      page, p_off, p_len, t) {
@@ -796,11 +814,13 @@ zc_rx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 	unsigned start, start_off = offset;
 	int i, copy, end, off;
 	int ret = 0;
+	printk("----- zc_rx_recv_skb: start\n");
 
 	if (unlikely(offset < skb_headlen(skb))) {
 		ssize_t copied;
 		size_t to_copy;
 
+		printk("----- zc_rx_recv_skb: offset < skb_headlen(skb), try to copy\n");
 		to_copy = min_t(size_t, skb_headlen(skb) - offset, len);
 		copied = zc_rx_copy_chunk(req, ifq, skb->data, offset, to_copy);
 		if (copied < 0) {
@@ -817,7 +837,9 @@ zc_rx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 
 	start = skb_headlen(skb);
 
+	printk("----- zc_rx_recv_skb: skb frags=%d\n", skb_shinfo(skb)->nr_frags);
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		// NOTE: these are frags set in __bnxt_rx_agg_pages()
 		const skb_frag_t *frag;
 
 		if (WARN_ON(start > offset + len))
@@ -832,6 +854,7 @@ zc_rx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 				copy = len;
 
 			off = offset - start;
+			printk("----- zc_rx_recv_skb: calling zc_rx_recv_frag\n");
 			ret = zc_rx_recv_frag(req, ifq, frag, off, copy);
 			if (ret < 0)
 				goto out;

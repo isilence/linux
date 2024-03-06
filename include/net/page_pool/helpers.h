@@ -124,7 +124,7 @@ static inline netmem_ref page_pool_alloc(struct page_pool *pool,
 	if ((*size << 1) > max_size) {
 		*size = max_size;
 		*offset = 0;
-		return page_pool_alloc_netmem(pool, gfp);
+		return page_pool_alloc_netmem(pool, gfp, false);
 	}
 
 	netmem = page_pool_alloc_frag_netmem(pool, offset, *size, gfp);

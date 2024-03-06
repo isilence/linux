@@ -1076,6 +1076,8 @@ struct bnxt_rx_ring_info {
 	struct bnxt_ring_struct	rx_agg_ring_struct;
 	struct xdp_rxq_info	xdp_rxq;
 	struct page_pool	*page_pool;
+	bool			zc_enabled;
+	int			idx;
 };
 
 struct bnxt_rx_sw_stats {
@@ -2557,6 +2559,10 @@ struct bnxt {
 #endif
 	u32			thermal_threshold_type;
 	enum board_idx		board_idx;
+
+	/* io_uring zerocopy */
+	void			*iou_ifq;
+	unsigned		iou_qid;
 };
 
 #define BNXT_NUM_RX_RING_STATS			8
@@ -2789,4 +2795,6 @@ int bnxt_get_port_parent_id(struct net_device *dev,
 void bnxt_dim_work(struct work_struct *work);
 int bnxt_hwrm_set_ring_coal(struct bnxt *bp, struct bnxt_napi *bnapi);
 void bnxt_print_device_info(struct bnxt *bp);
+
+int bnxt_zc_rx(struct bnxt *bp, struct netdev_bpf *xdp);
 #endif

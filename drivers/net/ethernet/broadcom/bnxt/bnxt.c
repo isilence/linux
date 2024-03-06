@@ -55,6 +55,8 @@
 #include <net/page_pool/helpers.h>
 #include <linux/align.h>
 #include <net/netdev_queues.h>
+#include <net/netdev_rx_queue.h>
+#include <linux/io_uring/net.h>
 
 #include "bnxt_hsi.h"
 #include "bnxt.h"
@@ -842,24 +844,41 @@ static void bnxt_tx_int(struct bnxt *bp, struct bnxt_napi *bnapi, int budget)
 	bnapi->events &= ~BNXT_TX_CMP_EVENT;
 }
 
+// NOTE: struct page * is always going to be a netmem
+// it is either a real struct page ptr - kernel memory (no NET_IOV bit)
+// or it is a struct net_iov (with NET_IOV bit) - inside of a io_zc_rx_buf
 static struct page *__bnxt_alloc_rx_page(struct bnxt *bp, dma_addr_t *mapping,
 					 struct bnxt_rx_ring_info *rxr,
 					 unsigned int *offset,
 					 gfp_t gfp)
 {
+	struct io_zc_rx_buf *buf;
+	dma_addr_t dma_addr;
 	struct page *page;
+	netmem_ref netmem;
 
 	if (PAGE_SIZE > BNXT_RX_PAGE_SIZE) {
+		// TODO: how to handle the frag (not page) path?
 		page = page_pool_dev_alloc_frag(rxr->page_pool, offset,
 						BNXT_RX_PAGE_SIZE);
+		dma_addr = page_pool_get_dma_addr(page);
 	} else {
-		page = page_pool_dev_alloc_pages(rxr->page_pool);
+		netmem = page_pool_alloc_netmem(rxr->page_pool, gfp, false);
+		if (!netmem)
+			return NULL;
+		page = (__force struct page *)netmem;
+		dma_addr = page_pool_get_dma_addr_netmem(netmem);
+		if (netmem_is_net_iov(netmem)) {
+			WARN_ON(!rxr->zc_enabled);
+			buf = container_of(netmem_to_net_iov(netmem), struct io_zc_rx_buf, niov);
+			//printk(KERN_INFO "__bnxt_alloc_rx_page: Page address: %#llx, dma_addr_t: %#llx\n", (unsigned long long)page_address(buf->page), dma_addr);
+		}
 		*offset = 0;
 	}
 	if (!page)
 		return NULL;
 
-	*mapping = page_pool_get_dma_addr(page) + *offset;
+	*mapping = dma_addr + *offset;
 	return page;
 }
 
@@ -903,9 +922,11 @@ int bnxt_alloc_rx_data(struct bnxt *bp, struct bnxt_rx_ring_info *rxr,
 			return -ENOMEM;
 
 		mapping += bp->rx_dma_offset;
+		// NOTE: netmem alloc from pp is stored as rx_buf->data as a void *
 		rx_buf->data = page;
 		rx_buf->data_ptr = page_address(page) + offset + bp->rx_offset;
 	} else {
+		// TODO: deal with frags
 		u8 *data = __bnxt_alloc_rx_frag(bp, &mapping, gfp);
 
 		if (!data)
@@ -1166,6 +1187,12 @@ static struct sk_buff *bnxt_rx_skb(struct bnxt *bp,
 
 	skb_reserve(skb, bp->rx_offset);
 	skb_put(skb, offset_and_len & 0xffff);
+
+	if (rxr->zc_enabled) {
+		WARN_ON(rxr->idx != 1);
+		printk("----- bnxt_rx_skb: constructing skb with header frags, ring idx=%d\n", rxr->idx);
+	}
+
 	return skb;
 }
 
@@ -1192,6 +1219,8 @@ static u32 __bnxt_rx_agg_pages(struct bnxt *bp,
 		struct bnxt_sw_rx_agg_bd *cons_rx_buf;
 		struct page *page;
 		dma_addr_t mapping;
+		struct io_zc_rx_buf *buf;
+		netmem_ref netmem;
 
 		if (p5_tpa)
 			agg = bnxt_get_tpa_agg_p5(bp, rxr, idx, i);
@@ -1202,8 +1231,19 @@ static u32 __bnxt_rx_agg_pages(struct bnxt *bp,
 			    RX_AGG_CMP_LEN) >> RX_AGG_CMP_LEN_SHIFT;
 
 		cons_rx_buf = &rxr->rx_agg_ring[cons];
+		// NOTE: sets frag->netmem and frag->offset and frag->size
+		// page is a netmem, and is net_iov if queue is 1
+		// frag->netmem = page_to_netmem(page)
 		skb_frag_fill_page_desc(frag, cons_rx_buf->page,
 					cons_rx_buf->offset, frag_len);
+		if (rxr->zc_enabled) {
+			WARN_ON(!skb_frag_is_net_iov(frag));
+			netmem = page_to_netmem(cons_rx_buf->page);
+			printk(KERN_INFO "----- __bnxt_rx_agg_pages: adding frag=%d, total agg_bufs=%d\n", i, agg_bufs);
+			buf = container_of(netmem_to_net_iov(netmem), struct io_zc_rx_buf, niov);
+			phys_addr_t page_phys_addr = page_to_phys(buf->page);
+			printk(KERN_INFO "----- __bnxt_rx_agg_pages: Page physical address: %#llx, dma_addr_t: %#lx\n", (unsigned long long)page_phys_addr, netmem_get_dma_addr(netmem));
+		}
 		shinfo->nr_frags = i + 1;
 		__clear_bit(cons, rxr->rx_agg_bmap);
 
@@ -1212,12 +1252,14 @@ static u32 __bnxt_rx_agg_pages(struct bnxt *bp,
 		 * need to clear the cons entry now.
 		 */
 		mapping = cons_rx_buf->mapping;
+		// NOTE: page is saved here only for alloc failures
 		page = cons_rx_buf->page;
 		cons_rx_buf->page = NULL;
 
 		if (xdp && page_is_pfmemalloc(page))
 			xdp_buff_set_frag_pfmemalloc(xdp);
 
+		// NOTE: realloc a page for the nulled out rx_agg_buf
 		if (bnxt_alloc_rx_page(bp, rxr, prod, GFP_ATOMIC) != 0) {
 			--shinfo->nr_frags;
 			cons_rx_buf->page = page;
@@ -1993,6 +2035,7 @@ static enum pkt_hash_types bnxt_rss_ext_op(struct bnxt *bp,
  * -ENOMEM - packet aborted due to out of memory
  * -EIO    - packet aborted due to hw error indicated in BD
  */
+// NOTE: main function for rx
 static int bnxt_rx_pkt(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 		       u32 *raw_cons, u8 *event)
 {
@@ -2144,6 +2187,10 @@ static int bnxt_rx_pkt(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 	}
 
 	if (len <= bp->rx_copy_thresh) {
+		if (rxr->zc_enabled) {
+			WARN_ON(rxr->idx != 1);
+			printk("----- bnxt_rx_pkt: constructing skb using bnxt_copy_skb, ring idx=%d\n", rxr->idx);
+		}
 		if (!xdp_active)
 			skb = bnxt_copy_skb(bnapi, data_ptr, len, dma_addr);
 		else
@@ -2162,6 +2209,10 @@ static int bnxt_rx_pkt(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 			goto next_rx;
 		}
 	} else {
+		if (rxr->zc_enabled) {
+			WARN_ON(rxr->idx != 1);
+			printk("----- bnxt_rx_pkt: constructing skb using rx_skb_func, ring idx=%d\n", rxr->idx);
+		}
 		u32 payload;
 
 		if (rx_buf->data_ptr == data_ptr)
@@ -2184,6 +2235,21 @@ static int bnxt_rx_pkt(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 				cpr->sw_stats.rx.rx_oom_discards += 1;
 				rc = -ENOMEM;
 				goto next_rx;
+			}
+			if (rxr->zc_enabled) {
+				WARN_ON(rxr->idx != 1);
+				printk("----- bnxt_rx_pkt: zc enabled for rxr idx=%d, checking skb...\n", rxr->idx);
+				for (int i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+					const skb_frag_t *frag;
+					frag = &skb_shinfo(skb)->frags[i];
+					if (frag && skb_frag_is_net_iov(frag)) {
+						printk("----- bnxt_rx_pkt: marking skb for logging\n");
+						skb->log = true;
+						break;
+					} else {
+						printk("----- bnxt_rx_pkt: frag is not net_iov, i=%d, nr_frags=%d\n", i, skb_shinfo(skb)->nr_frags);
+					}
+				}
 			}
 		} else {
 			skb = bnxt_xdp_build_skb(bp, skb, agg_bufs, rxr->page_pool, &xdp, rxcmp1);
@@ -3599,8 +3665,9 @@ static void bnxt_free_rx_rings(struct bnxt *bp)
 
 static int bnxt_alloc_rx_page_pool(struct bnxt *bp,
 				   struct bnxt_rx_ring_info *rxr,
-				   int numa_node)
+				   int numa_node, int qid)
 {
+	printk("----- bnxt_alloc_rx_page_pool: queue id=%d\n", qid);
 	struct page_pool_params pp = { 0 };
 
 	pp.pool_size = bp->rx_agg_ring_size;
@@ -3614,7 +3681,19 @@ static int bnxt_alloc_rx_page_pool(struct bnxt *bp,
 	pp.max_len = PAGE_SIZE;
 	pp.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV;
 
+	if (bp->iou_ifq && qid == bp->iou_qid) {
+		printk("----- bnxt_alloc_rx_page_pool: ifq is set and queue id matches, setting netdev_rx_queue\n");
+		pp.queue = __netif_get_rx_queue(bp->dev, qid);
+		pp.queue->mp_params.mp_ops = &io_uring_pp_zc_ops;
+		pp.queue->mp_params.mp_priv = bp->iou_ifq;
+		rxr->zc_enabled = true;
+	}
+
 	rxr->page_pool = page_pool_create(&pp);
+	if (bp->iou_ifq && qid == bp->iou_qid) {
+		pp.queue->mp_params.mp_ops = NULL;
+		pp.queue->mp_params.mp_priv = NULL;
+	}
 	if (IS_ERR(rxr->page_pool)) {
 		int err = PTR_ERR(rxr->page_pool);
 
@@ -3628,6 +3707,7 @@ static int bnxt_alloc_rx_rings(struct bnxt *bp)
 {
 	int numa_node = dev_to_node(&bp->pdev->dev);
 	int i, rc = 0, agg_rings = 0, cpu;
+	printk("----- bnxt_alloc_rx_rings: BNXT_RX_PAGE_MODE=%d\n", BNXT_RX_PAGE_MODE(bp));
 
 	if (!bp->rx_ring)
 		return -ENOMEM;
@@ -3646,7 +3726,7 @@ static int bnxt_alloc_rx_rings(struct bnxt *bp)
 		cpu_node = cpu_to_node(cpu);
 		netdev_dbg(bp->dev, "Allocating page pool for rx_ring[%d] on numa_node: %d\n",
 			   i, cpu_node);
-		rc = bnxt_alloc_rx_page_pool(bp, rxr, cpu_node);
+		rc = bnxt_alloc_rx_page_pool(bp, rxr, cpu_node, i);
 		if (rc)
 			return rc;
 
@@ -4067,6 +4147,7 @@ static int bnxt_alloc_one_rx_ring(struct bnxt *bp, int ring_nr)
 	int i;
 
 	prod = rxr->rx_prod;
+	rxr->idx = ring_nr;
 	for (i = 0; i < bp->rx_ring_size; i++) {
 		if (bnxt_alloc_rx_data(bp, rxr, prod, GFP_KERNEL)) {
 			netdev_warn(dev, "init'ed rx ring %d with %d/%d skbs only\n",
@@ -4465,9 +4546,11 @@ int bnxt_set_rx_skb_mode(struct bnxt *bp, bool page_mode)
 			dev->max_mtu =
 				min_t(u16, bp->max_mtu, BNXT_MAX_PAGE_MODE_MTU);
 		if (dev->mtu > BNXT_MAX_PAGE_MODE_MTU) {
+			printk("----- bnxt_set_rx_skb_mode: page_mode + jumbo\n");
 			bp->flags |= BNXT_FLAG_JUMBO;
 			bp->rx_skb_func = bnxt_rx_multi_page_skb;
 		} else {
+			printk("----- bnxt_set_rx_skb_mode: page_mode + no agg rings\n");
 			bp->flags |= BNXT_FLAG_NO_AGG_RINGS;
 			bp->rx_skb_func = bnxt_rx_page_skb;
 		}
@@ -4475,6 +4558,7 @@ int bnxt_set_rx_skb_mode(struct bnxt *bp, bool page_mode)
 		/* Disable LRO or GRO_HW */
 		netdev_update_features(dev);
 	} else {
+		printk("----- bnxt_set_rx_skb_mode: !page_mode\n");
 		dev->max_mtu = bp->max_mtu;
 		bp->flags &= ~BNXT_FLAG_RX_PAGE_MODE;
 		bp->rx_dir = DMA_FROM_DEVICE;
@@ -15232,6 +15316,83 @@ void bnxt_print_device_info(struct bnxt *bp)
 		    (long)pci_resource_start(bp->pdev, 0), bp->dev->dev_addr);
 
 	pcie_print_link_status(bp->pdev);
+}
+
+int bnxt_zc_rx(struct bnxt *bp, struct netdev_bpf *xdp)
+{
+	printk("----- bnxt_zc_rx: bp ptr=%px\n", bp);
+	unsigned ifq_idx = xdp->zc_rx.queue_id;
+
+	if (ifq_idx >= bp->rx_nr_rings)
+		return -EINVAL;
+	if (PAGE_SIZE != BNXT_RX_PAGE_SIZE)
+		return -EINVAL;
+
+	bnxt_rtnl_lock_sp(bp);
+	if (!!bp->iou_ifq == !!xdp->zc_rx.ifq) {
+		bnxt_rtnl_unlock_sp(bp);
+		return -EINVAL;
+	}
+	if (netif_running(bp->dev)) {
+		int rc;
+
+		bnxt_ulp_stop(bp);
+
+		/*
+
+		// bnxt_hwrm_ring_free
+		// NOTE: close rx ring
+		struct bnxt_rx_ring_info *rxr = &bp->rx_ring[ifq_idx];
+		struct bnxt_ring_struct *ring = &rxr->rx_ring_struct;
+		u32 grp_idx = rxr->bnapi->index;
+
+		if (ring->fw_ring_id != INVALID_HW_RING_ID) {
+			u32 cmpl_ring_id = bnxt_cp_ring_for_rx(bp, rxr);
+
+			hwrm_ring_free_send_msg(bp, ring,
+						RING_FREE_REQ_RING_TYPE_RX,
+						cmpl_ring_id);
+			ring->fw_ring_id = INVALID_HW_RING_ID;
+			bp->grp_info[grp_idx].rx_fw_ring_id =
+				INVALID_HW_RING_ID;
+		}
+
+		// NOTE: close rx agg ring
+		if (bp->flags & BNXT_FLAG_CHIP_P5_PLUS)
+			type = RING_FREE_REQ_RING_TYPE_RX_AGG;
+		else
+			type = RING_FREE_REQ_RING_TYPE_RX;
+		printk("----- bnxt_zc_rx: free req ring type=%d\n", type);
+		struct bnxt_rx_ring_info *rxr = &bp->rx_ring[ifq_idx];
+		struct bnxt_ring_struct *ring = &rxr->rx_agg_ring_struct;
+		u32 grp_idx = rxr->bnapi->index;
+
+		if (ring->fw_ring_id != INVALID_HW_RING_ID) {
+			u32 cmpl_ring_id = bnxt_cp_ring_for_rx(bp, rxr);
+
+			hwrm_ring_free_send_msg(bp, ring, type,
+						cmpl_ring_id);
+			ring->fw_ring_id = INVALID_HW_RING_ID;
+			bp->grp_info[grp_idx].agg_fw_ring_id =
+				INVALID_HW_RING_ID;
+		}
+
+		// NOTE: disable interrupts/doorbell
+		assert(bp->irq_tbl);
+		if (!bp->irq_tbl)
+			return;
+		*/
+
+		bnxt_close_nic(bp, true, false);
+
+		bp->iou_qid = ifq_idx;
+		bp->iou_ifq = xdp->zc_rx.ifq;
+
+		rc = bnxt_open_nic(bp, true, false);
+		bnxt_ulp_start(bp, rc);
+	}
+	bnxt_rtnl_unlock_sp(bp);
+	return 0;
 }
 
 static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)

@@ -5704,6 +5704,10 @@ static int __netif_receive_skb(struct sk_buff *skb)
 {
 	int ret;
 
+	if (skb->log) {
+		printk("----- __netif_receive_skb: got skb with log set\n");
+	}
+
 	if (sk_memalloc_socks() && skb_pfmemalloc(skb)) {
 		unsigned int noreclaim_flag;
 
@@ -5813,10 +5817,18 @@ static int netif_receive_skb_internal(struct sk_buff *skb)
 
 void netif_receive_skb_list_internal(struct list_head *head)
 {
+	// NOTE: head = napi->rx_list
 	struct sk_buff *skb, *next;
 	struct list_head sublist;
 
 	INIT_LIST_HEAD(&sublist);
+	/**
+	* list_for_each_entry_safe - iterate over list of given type safe against removal of list entry
+	* @pos:	the type * to use as a loop cursor.
+	* @n:		another type * to use as temporary storage
+	* @head:	the head for your list.
+	* @member:	the name of the list_head within the struct.
+	*/
 	list_for_each_entry_safe(skb, next, head, list) {
 		net_timestamp_check(READ_ONCE(net_hotdata.tstamp_prequeue),
 				    skb);
@@ -5836,6 +5848,7 @@ void netif_receive_skb_list_internal(struct list_head *head)
 			if (cpu >= 0) {
 				/* Will be handled, remove from list */
 				skb_list_del_init(skb);
+				// NOTE: is this the per cpu rx queue?
 				enqueue_to_backlog(skb, cpu, &rflow->last_qtail);
 			}
 		}
