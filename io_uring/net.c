@@ -455,9 +455,7 @@ int io_sendmsg(struct io_kiocb *req, unsigned int issue_flags)
 	if (ret < min_ret) {
 		if (ret == -EAGAIN && (issue_flags & IO_URING_F_NONBLOCK))
 			return io_setup_async_msg(req, kmsg, issue_flags);
-		if (ret > 0 && io_net_retry(sock, flags)) {
-			kmsg->msg.msg_controllen = 0;
-			kmsg->msg.msg_control = NULL;
+		if (ret > 0 && io_net_retry(sock, flags) && !kmsg->msg.msg_controllen) {
 			sr->done_io += ret;
 			req->flags |= REQ_F_BL_NO_RECYCLE;
 			return io_setup_async_msg(req, kmsg, issue_flags);
@@ -895,7 +893,7 @@ retry_multishot:
 			}
 			return ret;
 		}
-		if (ret > 0 && io_net_retry(sock, flags)) {
+		if (ret > 0 && io_net_retry(sock, flags) && !kmsg->msg.msg_controllen) {
 			sr->done_io += ret;
 			req->flags |= REQ_F_BL_NO_RECYCLE;
 			return io_setup_async_msg(req, kmsg, issue_flags);
@@ -1301,7 +1299,7 @@ int io_sendmsg_zc(struct io_kiocb *req, unsigned int issue_flags)
 		if (ret == -EAGAIN && (issue_flags & IO_URING_F_NONBLOCK))
 			return io_setup_async_msg(req, kmsg, issue_flags);
 
-		if (ret > 0 && io_net_retry(sock, flags)) {
+		if (ret > 0 && io_net_retry(sock, flags) && !kmsg->msg.msg_controllen) {
 			sr->done_io += ret;
 			req->flags |= REQ_F_BL_NO_RECYCLE;
 			return io_setup_async_msg(req, kmsg, issue_flags);
