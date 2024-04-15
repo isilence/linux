@@ -692,8 +692,6 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 		refcount_set(&fclones->fclone_ref, 1);
 	}
 
-	skb->readable = true;
-
 	return skb;
 
 nodata:
@@ -766,7 +764,6 @@ struct sk_buff *__netdev_alloc_skb(struct net_device *dev, unsigned int len,
 	if (pfmemalloc)
 		skb->pfmemalloc = 1;
 	skb->head_frag = 1;
-	skb->readable = true;
 
 skb_success:
 	skb_reserve(skb, NET_SKB_PAD);
@@ -854,7 +851,6 @@ struct sk_buff *napi_alloc_skb(struct napi_struct *napi, unsigned int len)
 	if (pfmemalloc)
 		skb->pfmemalloc = 1;
 	skb->head_frag = 1;
-	skb->readable = true;
 
 skb_success:
 	skb_reserve(skb, NET_SKB_PAD + NET_IP_ALIGN);
@@ -4054,9 +4050,9 @@ static inline void skb_split_inside_header(struct sk_buff *skb,
 		skb_shinfo(skb1)->frags[i] = skb_shinfo(skb)->frags[i];
 
 	skb_shinfo(skb1)->nr_frags = skb_shinfo(skb)->nr_frags;
-	skb1->readable		   = skb->readable;
+	skb1->unreadable		   = skb->unreadable;
 	skb_shinfo(skb)->nr_frags  = 0;
-	skb->readable		   = 1;
+	skb->unreadable		   = 0;
 	skb1->data_len		   = skb->data_len;
 	skb1->len		   += skb1->data_len;
 	skb->data_len		   = 0;
@@ -4070,7 +4066,7 @@ static inline void skb_split_no_header(struct sk_buff *skb,
 {
 	int i, k = 0;
 	const int nfrags = skb_shinfo(skb)->nr_frags;
-	const int readable = skb->readable;
+	const int unreadable = skb->unreadable;
 
 	skb_shinfo(skb)->nr_frags = 0;
 	skb1->len		  = skb1->data_len = skb->len - len;
@@ -4106,14 +4102,14 @@ static inline void skb_split_no_header(struct sk_buff *skb,
 	skb_shinfo(skb1)->nr_frags = k;
 
 	if (skb_shinfo(skb)->nr_frags)
-		skb->readable = readable;
+		skb->unreadable = unreadable;
 	else
-		skb->readable = 1;
+		skb->unreadable = 0;
 
 	if (skb_shinfo(skb1)->nr_frags)
-		skb1->readable = readable;
+		skb1->unreadable = unreadable;
 	else
-		skb1->readable = 1;
+		skb1->unreadable = 0;
 }
 
 /**

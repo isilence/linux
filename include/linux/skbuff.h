@@ -1000,7 +1000,7 @@ struct sk_buff {
 #if IS_ENABLED(CONFIG_IP_SCTP)
 	__u8			csum_not_inet:1;
 #endif
-	__u8			readable:1;
+	__u8			unreadable:1;
 #if defined(CONFIG_NET_SCHED) || defined(CONFIG_NET_XGRESS)
 	__u16			tc_index;	/* traffic control index */
 #endif
@@ -1804,7 +1804,7 @@ static inline void skb_zcopy_downgrade_managed(struct sk_buff *skb)
 /* Return true if frags in this skb are readable by the host. */
 static inline bool skb_frags_readable(const struct sk_buff *skb)
 {
-	return skb->readable;
+	return !skb->unreadable;
 }
 
 static inline void skb_mark_not_on_list(struct sk_buff *skb)
@@ -2528,7 +2528,7 @@ static inline void __skb_fill_netmem_desc(struct sk_buff *skb, int i,
 	__skb_fill_netmem_desc_noacc(skb_shinfo(skb), i, netmem, off, size);
 
 	if (netmem_is_net_iov(netmem)) {
-		skb->readable = false;
+		skb->unreadable = true;
 		return;
 	}
 

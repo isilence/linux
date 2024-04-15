@@ -2391,7 +2391,7 @@ static int tcp_recvmsg_dmabuf(struct sock *sk, const struct sk_buff *skb,
 	do {
 		start = skb_headlen(skb);
 
-		if (skb->readable) {
+		if (!skb->unreadable) {
 			err = -ENODEV;
 			goto out;
 		}
@@ -2716,10 +2716,10 @@ found_ok_skb:
 
 		if (!(flags & MSG_TRUNC)) {
 			if (last_copied_dmabuf != -1 &&
-			    last_copied_dmabuf != !skb->readable)
+			    last_copied_dmabuf != skb->unreadable)
 				break;
 
-			if (skb->readable) {
+			if (!skb->unreadable) {
 				err = skb_copy_datagram_msg(skb, offset, msg,
 							    used);
 				if (err) {
@@ -2751,7 +2751,7 @@ found_ok_skb:
 			}
 		}
 
-		last_copied_dmabuf = !skb->readable;
+		last_copied_dmabuf = skb->unreadable;
 
 		WRITE_ONCE(*seq, *seq + used);
 		copied += used;
