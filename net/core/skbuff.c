@@ -2982,6 +2982,9 @@ int skb_copy_bits(const struct sk_buff *skb, int offset, void *to, int len)
 
 		WARN_ON(start > offset + len);
 
+		if (WARN_ON_ONCE(skb_frag_is_net_iov(f)))
+			goto fault;
+
 		end = start + skb_frag_size(f);
 		if ((copy = end - offset) > 0) {
 			u32 p_off, p_len, copied;

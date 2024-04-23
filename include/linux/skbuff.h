@@ -1825,7 +1825,16 @@ static inline void skb_zcopy_downgrade_managed(struct sk_buff *skb)
 /* Return true if frags in this skb are readable by the host. */
 static inline bool skb_frags_readable(const struct sk_buff *skb)
 {
-	return !skb->unreadable;
+	int i;
+
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		const skb_frag_t *f = &skb_shinfo(skb)->frags[i];
+
+		if (netmem_is_net_iov(f->netmem))
+			return false;
+	}
+
+	return true;
 }
 
 static inline void skb_mark_not_on_list(struct sk_buff *skb)
