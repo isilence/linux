@@ -278,6 +278,7 @@
 #include <net/sock.h>
 #include <net/rstreason.h>
 #include <net/devmem.h>
+#include <net/page_pool/types.h>
 
 #include <linux/uaccess.h>
 #include <asm/ioctls.h>
@@ -2469,6 +2470,11 @@ static int tcp_recvmsg_dmabuf(struct sock *sk, const struct sk_buff *skb,
 			}
 
 			niov = skb_frag_net_iov(frag);
+			if (niov->pp->mp_ops != &dmabuf_devmem_ops) {
+				err = -ENODEV;
+				goto out;
+			}
+
 			end = start + skb_frag_size(frag);
 			copy = end - offset;
 
