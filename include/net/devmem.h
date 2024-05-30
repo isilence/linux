@@ -42,25 +42,6 @@ struct net_devmem_dmabuf_binding {
 	u32 id;
 };
 
-/* Owner of the dma-buf chunks inserted into the gen pool. Each scatterlist
- * entry from the dmabuf is inserted into the genpool as a chunk, and needs
- * this owner struct to keep track of some metadata necessary to create
- * allocations from this chunk.
- */
-struct dmabuf_genpool_chunk_owner {
-	/* Offset into the dma-buf where this chunk starts.  */
-	unsigned long base_virtual;
-
-	/* dma_addr of the start of the chunk.  */
-	dma_addr_t base_dma_addr;
-
-	/* Array of net_iovs for this chunk. */
-	struct net_iov *niovs;
-	size_t num_niovs;
-
-	struct net_devmem_dmabuf_binding *binding;
-};
-
 #if defined(CONFIG_DMA_SHARED_BUFFER) && defined(CONFIG_GENERIC_ALLOCATOR)
 void __net_devmem_dmabuf_binding_free(struct net_devmem_dmabuf_binding *binding);
 int net_devmem_bind_dmabuf(struct net_device *dev, unsigned int dmabuf_fd,
