@@ -30,6 +30,7 @@
 #include <linux/io_uring/net.h>
 #include <net/netdev_rx_queue.h>
 #include <net/page_pool/helpers.h>
+#include <net/netdev_queues.h>
 
 #define DRV_NAME	"veth"
 #define DRV_VERSION	"1.0"
@@ -70,7 +71,6 @@ struct veth_rq {
 	struct ptr_ring		xdp_ring;
 	struct xdp_rxq_info	xdp_rxq;
 	struct page_pool	*page_pool;
-	struct netdev_rx_queue	rq;
 };
 
 struct veth_priv {
@@ -1057,7 +1057,8 @@ static int veth_poll(struct napi_struct *napi, int budget)
 	return done;
 }
 
-static int veth_create_page_pool(struct veth_rq *rq, struct io_zc_rx_ifq *ifq)
+static int veth_create_page_pool(struct veth_rq *rq,
+				 struct netdev_rx_queue *queue)
 {
 	struct page_pool_params pp_params = {
 		.order = 0,
@@ -1067,10 +1068,8 @@ static int veth_create_page_pool(struct veth_rq *rq, struct io_zc_rx_ifq *ifq)
 		.napi = &rq->xdp_napi,
 	};
 
-	if (ifq) {
-		rq->rq.mp_params.mp_ops = &io_uring_pp_zc_ops;
-		rq->rq.mp_params.mp_priv = ifq;
-		pp_params.queue = &rq->rq;
+	if (queue) {
+		pp_params.queue = queue;
 	}
 
 	rq->page_pool = page_pool_create(&pp_params);
@@ -1634,12 +1633,26 @@ out:
 	rcu_read_unlock();
 }
 
-/*
-static int __veth_iou_set(struct net_device *dev,
-			  struct netdev_bpf *xdp)
+
+static int veth_queue_mem_alloc(struct net_device *dev, void *qmem, int idx)
 {
+	return 0;
+}
+
+static void veth_queue_mem_free(struct net_device *dev, void *qmem)
+{
+}
+
+static int veth_queue_start(struct net_device *dev, void *qmem, int idx)
+{
+	return 0;
+}
+
+static int veth_queue_stop(struct net_device *dev, void *qmem, int idx)
+{
+	struct netdev_rx_queue *rx_queue;
 	bool napi_already_on = veth_gro_requested(dev) && (dev->flags & IFF_UP);
-	unsigned qid = xdp->zc_rx.queue_id;
+	unsigned qid = idx;
 	struct veth_priv *priv = netdev_priv(dev);
 	struct net_device *peer;
 	struct veth_rq *rq;
@@ -1655,26 +1668,25 @@ static int __veth_iou_set(struct net_device *dev,
 		return -EINVAL;
 	rq = &priv->rq[qid];
 
-	if (!xdp->zc_rx.ifq) {
-		if (!priv->zc_installed)
-			return -EINVAL;
 
+	rx_queue = __netif_get_rx_queue(dev, qid);
+	if (WARN_ON_ONCE(!rx_queue)) {
+		return -EINVAL;
+	}
+
+	if (priv->zc_installed) {
 		veth_napi_del(dev);
 		priv->zc_installed = false;
 		if (!veth_gro_requested(dev) && netif_running(dev)) {
 			dev->features &= ~NETIF_F_GRO;
 			netdev_features_change(dev);
 		}
-		return 0;
 	}
-
-	if (priv->zc_installed)
-		return -EINVAL;
 
 	peer = rtnl_dereference(priv->peer);
 	peer->hw_features &= ~NETIF_F_GSO_SOFTWARE;
 
-	ret = veth_create_page_pool(rq, xdp->zc_rx.ifq);
+	ret = veth_create_page_pool(rq, rx_queue);
 	if (ret)
 		return ret;
 
@@ -1700,18 +1712,14 @@ static int __veth_iou_set(struct net_device *dev,
 	}
 	return 0;
 }
-*/
 
-static int veth_iou_set(struct net_device *dev,
-			struct netdev_bpf *xdp)
-{
-	int ret;
-
-	rtnl_lock();
-	//ret = __veth_iou_set(dev, xdp);
-	rtnl_unlock();
-	return ret;
-}
+static const struct netdev_queue_mgmt_ops veth_queue_mgmt_ops = {
+	.ndo_queue_mem_size	= 1,
+	.ndo_queue_mem_alloc	= veth_queue_mem_alloc,
+	.ndo_queue_mem_free	= veth_queue_mem_free,
+	.ndo_queue_start	= veth_queue_start,
+	.ndo_queue_stop		= veth_queue_stop,
+};
 
 static int veth_xdp_set(struct net_device *dev, struct bpf_prog *prog,
 			struct netlink_ext_ack *extack)
@@ -1895,6 +1903,7 @@ static void veth_setup(struct net_device *dev)
 	dev->priv_flags |= IFF_PHONY_HEADROOM;
 
 	dev->netdev_ops = &veth_netdev_ops;
+	dev->queue_mgmt_ops = &veth_queue_mgmt_ops;
 	dev->xdp_metadata_ops = &veth_xdp_metadata_ops;
 	dev->ethtool_ops = &veth_ethtool_ops;
 	dev->features |= NETIF_F_LLTX;
