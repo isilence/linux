@@ -55,6 +55,8 @@
 #include <net/page_pool/helpers.h>
 #include <linux/align.h>
 #include <net/netdev_queues.h>
+#include <net/netdev_rx_queue.h>
+#include <linux/io_uring/net.h>
 
 #include "bnxt_hsi.h"
 #include "bnxt.h"
@@ -869,19 +871,28 @@ static struct page *__bnxt_alloc_rx_page(struct bnxt *bp, dma_addr_t *mapping,
 					 unsigned int *offset,
 					 gfp_t gfp)
 {
+	dma_addr_t dma_addr;
 	struct page *page;
+	netmem_ref netmem;
 
 	if (PAGE_SIZE > BNXT_RX_PAGE_SIZE) {
 		page = page_pool_dev_alloc_frag(rxr->page_pool, offset,
 						BNXT_RX_PAGE_SIZE);
-	} else {
-		page = page_pool_dev_alloc_pages(rxr->page_pool);
-		*offset = 0;
-	}
-	if (!page)
-		return NULL;
+		if (!page)
+			return NULL;
 
-	*mapping = page_pool_get_dma_addr(page) + *offset;
+		dma_addr = page_pool_get_dma_addr(page);
+	} else {
+		netmem = page_pool_alloc_netmem(rxr->page_pool, gfp);
+		if (!netmem)
+			return NULL;
+
+		dma_addr = page_pool_get_dma_addr_netmem(netmem);
+		*offset = 0;
+		page = (__force struct page *)netmem;
+	}
+
+	*mapping = dma_addr + *offset;
 	return page;
 }
 
@@ -3621,7 +3632,9 @@ static int bnxt_alloc_rx_page_pool(struct bnxt *bp,
 	pp.dev = &bp->pdev->dev;
 	pp.dma_dir = bp->rx_dir;
 	pp.max_len = PAGE_SIZE;
-	pp.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV;
+	pp.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV |
+		   PP_FLAG_ALLOW_UNREADABLE_NETMEM;
+	pp.queue_idx = rxr->bnapi->index;
 
 	rxr->page_pool = page_pool_create(&pp);
 	if (IS_ERR(rxr->page_pool)) {
