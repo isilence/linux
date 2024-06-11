@@ -55,6 +55,8 @@
 #include <net/page_pool/helpers.h>
 #include <linux/align.h>
 #include <net/netdev_queues.h>
+#include <net/netdev_rx_queue.h>
+#include <linux/io_uring/net.h>
 
 #include "bnxt_hsi.h"
 #include "bnxt.h"
@@ -888,19 +890,28 @@ static struct page *__bnxt_alloc_rx_page(struct bnxt *bp, dma_addr_t *mapping,
 					 unsigned int *offset,
 					 gfp_t gfp)
 {
+	dma_addr_t dma_addr;
 	struct page *page;
+	netmem_ref netmem;
 
 	if (PAGE_SIZE > BNXT_RX_PAGE_SIZE) {
 		page = page_pool_dev_alloc_frag(rxr->page_pool, offset,
 						BNXT_RX_PAGE_SIZE);
-	} else {
-		page = page_pool_dev_alloc_pages(rxr->page_pool);
-		*offset = 0;
-	}
-	if (!page)
-		return NULL;
+		if (!page)
+			return NULL;
 
-	*mapping = page_pool_get_dma_addr(page) + *offset;
+		dma_addr = page_pool_get_dma_addr(page);
+	} else {
+		netmem = page_pool_alloc_netmems(rxr->page_pool, gfp);
+		if (!netmem)
+			return NULL;
+
+		dma_addr = page_pool_get_dma_addr_netmem(netmem);
+		*offset = 0;
+		page = (__force struct page *)netmem;
+	}
+
+	*mapping = dma_addr + *offset;
 	return page;
 }
 
@@ -1281,6 +1292,7 @@ static struct sk_buff *bnxt_rx_agg_pages_skb(struct bnxt *bp,
 {
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
 	u32 total_frag_len = 0;
+	int i;
 
 	total_frag_len = __bnxt_rx_agg_pages(bp, cpr, shinfo, idx,
 					     agg_bufs, tpa, NULL);
@@ -1288,6 +1300,14 @@ static struct sk_buff *bnxt_rx_agg_pages_skb(struct bnxt *bp,
 		skb_mark_for_recycle(skb);
 		dev_kfree_skb(skb);
 		return NULL;
+	}
+	for (i = 0; i < shinfo->nr_frags; i++) {
+		skb_frag_t *frag = &shinfo->frags[i];
+
+		if (netmem_is_net_iov(frag->netmem)) {
+			skb->unreadable = true;
+			break;
+		}
 	}
 
 	skb->data_len += total_frag_len;
@@ -3746,15 +3766,18 @@ static int bnxt_alloc_rx_page_pool(struct bnxt *bp,
 	pp.dev = &bp->pdev->dev;
 	pp.dma_dir = bp->rx_dir;
 	pp.max_len = PAGE_SIZE;
-	pp.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV;
+	pp.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV |
+		   PP_FLAG_ALLOW_UNREADABLE_NETMEM;
+	pp.queue_idx = rxr->bnapi->index;
 
 	pool = page_pool_create(&pp);
 	if (IS_ERR(pool))
 		return PTR_ERR(pool);
 	rxr->page_pool = pool;
 
-	if (bnxt_separate_head_pool()) {
+	if (bnxt_separate_head_pool() || pool->mp_ops) {
 		pp.pool_size = max(bp->rx_ring_size, 1024);
+		pp.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV;
 		pool = page_pool_create(&pp);
 		if (IS_ERR(pool))
 			goto err_destroy_pp;
