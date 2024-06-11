@@ -1293,6 +1293,7 @@ static struct sk_buff *bnxt_rx_agg_pages_skb(struct bnxt *bp,
 {
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
 	u32 total_frag_len = 0;
+	int i;
 
 	total_frag_len = __bnxt_rx_agg_pages(bp, cpr, shinfo, idx,
 					     agg_bufs, tpa, NULL);
@@ -1300,6 +1301,14 @@ static struct sk_buff *bnxt_rx_agg_pages_skb(struct bnxt *bp,
 		skb_mark_for_recycle(skb);
 		dev_kfree_skb(skb);
 		return NULL;
+	}
+	for (i = 0; i < shinfo->nr_frags; i++) {
+		skb_frag_t *frag = &shinfo->frags[i];
+
+		if (netmem_is_net_iov(frag->netmem)) {
+			skb->unreadable = true;
+			break;
+		}
 	}
 
 	skb->data_len += total_frag_len;
@@ -3761,8 +3770,9 @@ static int bnxt_alloc_rx_page_pool(struct bnxt *bp,
 		return PTR_ERR(pool);
 	rxr->page_pool = pool;
 
-	if (bnxt_separate_head_pool()) {
+	if (bnxt_separate_head_pool() || pool->mp_ops) {
 		pp.pool_size = max(bp->rx_ring_size, 1024);
+		pp.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV;
 		pool = page_pool_create(&pp);
 		if (IS_ERR(pool))
 			goto err_destroy_pp;
