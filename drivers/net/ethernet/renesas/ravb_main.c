@@ -303,8 +303,9 @@ ravb_alloc_rx_buffer(struct net_device *ndev, int q, u32 entry, gfp_t gfp_mask,
 
 	rx_buff = &priv->rx_buffers[q][entry];
 	size = info->rx_buffer_size;
-	rx_buff->page = page_pool_alloc(priv->rx_pool[q], &rx_buff->offset,
-					&size, gfp_mask);
+	rx_buff->page = netmem_to_page(page_pool_alloc(priv->rx_pool[q],
+						       &rx_buff->offset,
+						       &size, gfp_mask));
 	if (unlikely(!rx_buff->page)) {
 		/* We just set the data size to 0 for a failed mapping which
 		 * should prevent DMA from happening...
