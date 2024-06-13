@@ -673,6 +673,10 @@ operations:
             - tx-packets
             - tx-bytes
 
+kernel-family:
+  headers: [ "linux/list.h"]
+  sock-priv: struct list_head
+
 mcast-groups:
   list:
     -
