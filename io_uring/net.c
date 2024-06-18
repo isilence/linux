@@ -1296,12 +1296,16 @@ static int io_sg_from_iter_iovec(struct ubuf_info *ubuf, struct sk_buff *skb,
 static int io_sg_from_iter(struct ubuf_info *ubuf, struct sk_buff *skb,
 			   struct iov_iter *from, size_t length)
 {
+	struct io_notif_data *nd = container_of(ubuf, struct io_notif_data, uarg);
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
 	int frag = shinfo->nr_frags;
 	int ret = 0;
 	struct bvec_iter bi;
 	ssize_t copied = 0;
 	unsigned long truesize = 0;
+
+	if (!nd->zc_fixed_buf)
+		return io_sg_from_iter_iovec(ubuf, skb, from, length);
 
 	if (!frag)
 		shinfo->flags |= SKBFL_MANAGED_FRAG_REFS;
@@ -1342,6 +1346,8 @@ static int io_send_zc_import(struct io_kiocb *req, unsigned int issue_flags)
 	struct io_async_msghdr *kmsg = req->async_data;
 	int ret;
 
+	kmsg->msg.sg_from_iter = io_sg_from_iter;
+
 	if (sr->flags & IORING_RECVSEND_FIXED_BUF) {
 		struct io_ring_ctx *ctx = req->ctx;
 		struct io_rsrc_node *node;
@@ -1363,7 +1369,7 @@ static int io_send_zc_import(struct io_kiocb *req, unsigned int issue_flags)
 					sr->len);
 		if (unlikely(ret))
 			return ret;
-		kmsg->msg.sg_from_iter = io_sg_from_iter;
+		io_notif_to_data(sr->notif)->zc_fixed_buf = true;
 	} else {
 		ret = import_ubuf(ITER_SOURCE, sr->buf, sr->len, &kmsg->msg.msg_iter);
 		if (unlikely(ret))
@@ -1371,7 +1377,6 @@ static int io_send_zc_import(struct io_kiocb *req, unsigned int issue_flags)
 		ret = io_notif_account_mem(sr->notif, sr->len);
 		if (unlikely(ret))
 			return ret;
-		kmsg->msg.sg_from_iter = io_sg_from_iter_iovec;
 	}
 
 	return ret;
@@ -1471,7 +1476,7 @@ int io_sendmsg_zc(struct io_kiocb *req, unsigned int issue_flags)
 
 	kmsg->msg.msg_control_user = sr->msg_control;
 	kmsg->msg.msg_ubuf = &io_notif_to_data(sr->notif)->uarg;
-	kmsg->msg.sg_from_iter = io_sg_from_iter_iovec;
+	kmsg->msg.sg_from_iter = io_sg_from_iter;
 	ret = __sys_sendmsg_sock(sock, &kmsg->msg, flags);
 
 	if (unlikely(ret < min_ret)) {

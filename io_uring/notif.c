@@ -122,6 +122,7 @@ struct io_kiocb *io_alloc_notif(struct io_ring_ctx *ctx)
 
 	nd = io_notif_to_data(notif);
 	nd->zc_report = false;
+	nd->zc_fixed_buf = false;
 	nd->account_pages = 0;
 	nd->next = NULL;
 	nd->head = nd;

@@ -18,6 +18,7 @@ struct io_notif_data {
 	struct io_notif_data	*head;
 
 	unsigned		account_pages;
+	bool			zc_fixed_buf;
 	bool			zc_report;
 	bool			zc_used;
 	bool			zc_copied;
