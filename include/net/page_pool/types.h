@@ -131,8 +131,16 @@ struct page_pool_stats {
 };
 #endif
 
+struct memory_provider_ops {
+	netmem_ref (*get_buffers)(struct page_pool *pool, gfp_t gfp);
+	bool (*put_buffer)(struct page_pool *pool, netmem_ref netmem);
+	int (*init)(struct page_pool *pool);
+	void (*destroy)(struct page_pool *pool);
+};
+
 struct pp_memory_provider_params {
 	void *mp_priv;
+	const struct memory_provider_ops *mp_ops;
 };
 
 struct page_pool {
@@ -202,6 +210,7 @@ struct page_pool {
 	struct ptr_ring ring;
 
 	void *mp_priv;
+	const struct memory_provider_ops *mp_ops;
 
 #ifdef CONFIG_PAGE_POOL_STATS
 	/* recycle stats are per-cpu to avoid locking */
