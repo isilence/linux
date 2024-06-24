@@ -58,6 +58,9 @@ struct dmabuf_genpool_chunk_owner {
 };
 
 #if defined(CONFIG_DMA_SHARED_BUFFER) && defined(CONFIG_GENERIC_ALLOCATOR)
+
+extern const struct memory_provider_ops dmabuf_devmem_ops;
+
 void __net_devmem_dmabuf_binding_free(struct net_devmem_dmabuf_binding *binding);
 int net_devmem_bind_dmabuf(struct net_device *dev, unsigned int dmabuf_fd,
 			   struct net_devmem_dmabuf_binding **out);
