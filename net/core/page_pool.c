@@ -498,9 +498,7 @@ static struct page *__page_pool_alloc_page_order(struct page_pool *pool,
 	page_pool_set_pp_info(pool, page_to_netmem(page));
 
 	/* Track how many pages are held 'in-flight' */
-	pool->pages_state_hold_cnt++;
-	trace_page_pool_state_hold(pool, page_to_netmem(page),
-				   pool->pages_state_hold_cnt);
+	page_pool_state_hold(pool, page_to_netmem(page));
 	return page;
 }
 
@@ -544,9 +542,7 @@ static noinline netmem_ref __page_pool_alloc_pages_slow(struct page_pool *pool,
 		page_pool_set_pp_info(pool, netmem);
 		pool->alloc.cache[pool->alloc.count++] = netmem;
 		/* Track how many pages are held 'in-flight' */
-		pool->pages_state_hold_cnt++;
-		trace_page_pool_state_hold(pool, netmem,
-					   pool->pages_state_hold_cnt);
+		page_pool_state_hold(pool, netmem);
 	}
 
 	/* Return last page */
