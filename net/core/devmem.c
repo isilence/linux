@@ -10,7 +10,6 @@
 #include <linux/types.h>
 #include <linux/mm.h>
 #include <linux/netdevice.h>
-#include <trace/events/page_pool.h>
 #include <net/netdev_rx_queue.h>
 #include <net/page_pool/types.h>
 #include <net/page_pool/helpers.h>
@@ -345,8 +344,7 @@ netmem_ref mp_dmabuf_devmem_alloc_netmems(struct page_pool *pool, gfp_t gfp)
 	if (page_pool_set_dma_addr_netmem(netmem, dma_addr))
 		goto err_free;
 
-	pool->pages_state_hold_cnt++;
-	trace_page_pool_state_hold(pool, netmem, pool->pages_state_hold_cnt);
+	page_pool_state_hold(pool, netmem);
 	return netmem;
 
 err_free:

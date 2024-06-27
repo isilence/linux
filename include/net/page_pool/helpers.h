@@ -57,6 +57,7 @@
 #include <net/page_pool/types.h>
 #include <net/net_debug.h>
 #include <net/netmem.h>
+#include <trace/events/page_pool.h>
 
 #ifdef CONFIG_PAGE_POOL_STATS
 /* Deprecated driver-facing API, use netlink instead */
@@ -498,5 +499,12 @@ static inline void page_pool_clear_pp_info(netmem_ref netmem)
 {
 	netmem_clear_pp_magic(netmem);
 	netmem_set_pp(netmem, NULL);
+}
+
+static inline void page_pool_state_hold(struct page_pool *pool,
+					netmem_ref netmem)
+{
+	pool->pages_state_hold_cnt++;
+	trace_page_pool_state_hold(pool, netmem, pool->pages_state_hold_cnt);
 }
 #endif /* _NET_PAGE_POOL_HELPERS_H */
