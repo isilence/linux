@@ -237,6 +237,10 @@ struct page_pool {
 	} user;
 };
 
+bool page_pool_dma_map_page(struct page_pool *pool, netmem_ref netmem,
+			    struct page *page);
+void page_pool_release_page_dma(struct page_pool *pool, netmem_ref netmem);
+
 struct page *page_pool_alloc_pages(struct page_pool *pool, gfp_t gfp);
 netmem_ref page_pool_alloc_netmem(struct page_pool *pool, gfp_t gfp);
 struct page *page_pool_alloc_frag(struct page_pool *pool, unsigned int *offset,
