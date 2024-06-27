@@ -271,6 +271,11 @@ void page_pool_use_xdp_mem(struct page_pool *pool, void (*disconnect)(void *),
 			   const struct xdp_mem_info *mem);
 void page_pool_put_page_bulk(struct page_pool *pool, void **data,
 			     int count);
+
+int page_pool_init_paged_area(struct page_pool *pool,
+			      struct net_iov_area *area, struct page **pages);
+void page_pool_release_area(struct page_pool *pool,
+			    struct net_iov_area *area);
 #else
 static inline void page_pool_destroy(struct page_pool *pool)
 {
@@ -284,6 +289,18 @@ static inline void page_pool_use_xdp_mem(struct page_pool *pool,
 
 static inline void page_pool_put_page_bulk(struct page_pool *pool, void **data,
 					   int count)
+{
+}
+
+static inline int page_pool_init_paged_area(struct page_pool *pool,
+					    struct net_iov_area *area,
+					    struct page **pages)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline void page_pool_release_area(struct page_pool *pool,
+					  struct net_iov_area *area)
 {
 }
 #endif
