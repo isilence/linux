@@ -8,7 +8,6 @@
 #ifndef _NET_NETMEM_H
 #define _NET_NETMEM_H
 
-#include <net/devmem.h>
 #include <net/net_debug.h>
 
 /* net_iov */
@@ -27,6 +26,15 @@ struct net_iov {
 	struct net_iov_area *owner;
 	unsigned long dma_addr;
 	atomic_long_t pp_ref_count;
+};
+
+struct net_iov_area {
+	/* Array of net_iovs for this area. */
+	struct net_iov *niovs;
+	size_t num_niovs;
+
+	/* Offset into the dma-buf where this chunk starts.  */
+	unsigned long base_virtual;
 };
 
 /* These fields in struct page are used by the page_pool and net stack:
@@ -71,25 +79,6 @@ static inline unsigned long net_iov_virtual_addr(const struct net_iov *niov)
 
 	return owner->base_virtual +
 	       ((unsigned long)net_iov_idx(niov) << PAGE_SHIFT);
-}
-
-static inline struct dmabuf_genpool_chunk_owner *
-net_devmem_iov_to_chunk_owner(const struct net_iov *niov)
-{
-	struct net_iov_area *owner = net_iov_owner(niov);
-
-	return container_of(owner, struct dmabuf_genpool_chunk_owner, area);
-}
-
-static inline struct net_devmem_dmabuf_binding *
-net_devmem_iov_binding(const struct net_iov *niov)
-{
-	return net_devmem_iov_to_chunk_owner(niov)->binding;
-}
-
-static inline u32 net_devmem_iov_binding_id(const struct net_iov *niov)
-{
-	return net_devmem_iov_binding(niov)->id;
 }
 
 /* netmem */

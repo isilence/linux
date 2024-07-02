@@ -10,6 +10,8 @@
 #ifndef _NET_DEVMEM_H
 #define _NET_DEVMEM_H
 
+#include <net/netmem.h>
+
 struct net_devmem_dmabuf_binding {
 	struct dma_buf *dmabuf;
 	struct dma_buf_attachment *attachment;
@@ -40,15 +42,6 @@ struct net_devmem_dmabuf_binding {
 	 * active.
 	 */
 	u32 id;
-};
-
-struct net_iov_area {
-	/* Array of net_iovs for this area. */
-	struct net_iov *niovs;
-	size_t num_niovs;
-
-	/* Offset into the dma-buf where this chunk starts.  */
-	unsigned long base_virtual;
 };
 
 /* Owner of the dma-buf chunks inserted into the gen pool. Each scatterlist
@@ -122,6 +115,25 @@ net_devmem_dmabuf_binding_put(struct net_devmem_dmabuf_binding *binding)
 		return;
 
 	__net_devmem_dmabuf_binding_free(binding);
+}
+
+static inline struct dmabuf_genpool_chunk_owner *
+net_devmem_iov_to_chunk_owner(const struct net_iov *niov)
+{
+	struct net_iov_area *owner = net_iov_owner(niov);
+
+	return container_of(owner, struct dmabuf_genpool_chunk_owner, area);
+}
+
+static inline struct net_devmem_dmabuf_binding *
+net_devmem_iov_binding(const struct net_iov *niov)
+{
+	return net_devmem_iov_to_chunk_owner(niov)->binding;
+}
+
+static inline u32 net_devmem_iov_binding_id(const struct net_iov *niov)
+{
+	return net_devmem_iov_binding(niov)->id;
 }
 
 #endif /* _NET_DEVMEM_H */

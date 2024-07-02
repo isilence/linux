@@ -277,6 +277,7 @@
 #include <net/ip.h>
 #include <net/sock.h>
 #include <net/rstreason.h>
+#include <net/devmem.h>
 
 #include <linux/uaccess.h>
 #include <asm/ioctls.h>
