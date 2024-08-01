@@ -24,6 +24,7 @@
 #if defined(CONFIG_PAGE_POOL) && defined(CONFIG_INET)
 
 #define IO_SKBS_PER_CALL_LIMIT	20
+#define IO_RQ_MAX_ENTRIES	32768
 
 struct io_zcrx_args {
 	struct io_kiocb		*req;
@@ -256,6 +257,13 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 		return -EINVAL;
 	if (reg.if_rxq == -1 || !reg.rq_entries || reg.flags)
 		return -EINVAL;
+	if (reg.rq_entries > IO_RQ_MAX_ENTRIES) {
+		if (!(ctx->flags & IORING_SETUP_CLAMP))
+			return -EINVAL;
+		reg.rq_entries = IO_RQ_MAX_ENTRIES;
+	}
+	reg.rq_entries = roundup_pow_of_two(reg.rq_entries);
+
 	if (copy_from_user(&area, u64_to_user_ptr(reg.area_ptr), sizeof(area)))
 		return -EFAULT;
 
