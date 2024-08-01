@@ -144,23 +144,26 @@ static int io_zcrx_create_area(struct io_ring_ctx *ctx,
 		return ret;
 
 	ret = -ENOMEM;
-	area = kmalloc(sizeof(*area), GFP_KERNEL);
+	area = kzalloc(sizeof(*area), GFP_KERNEL);
 	if (!area)
 		goto err;
 
 	area->pages = io_pin_pages((unsigned long)area_reg->addr, area_reg->len,
 				   &nr_pages);
-	if (!area->pages)
+	if (IS_ERR(area->pages)) {
+		ret = PTR_ERR(area->pages);
+		area->pages = NULL;
 		goto err;
+	}
 	area->nia.num_niovs = nr_pages;
 
 	area->nia.niovs = kvmalloc_array(nr_pages, sizeof(area->nia.niovs[0]),
-					 GFP_KERNEL);
+					 GFP_KERNEL | __GFP_ZERO);
 	if (!area->nia.niovs)
 		goto err;
 
 	area->freelist = kvmalloc_array(nr_pages, sizeof(area->freelist[0]),
-					GFP_KERNEL);
+					GFP_KERNEL | __GFP_ZERO);
 	if (!area->freelist)
 		goto err;
 
