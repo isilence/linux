@@ -404,12 +404,13 @@ static void io_zcrx_ring_refill(struct page_pool *pp,
 {
 	unsigned int entries = io_zcrx_rqring_entries(ifq);
 	unsigned int mask = ifq->rq_entries - 1;
+	int i;
 
 	entries = min_t(unsigned, entries, PP_ALLOC_CACHE_REFILL - pp->alloc.count);
 	if (unlikely(!entries))
 		return;
 
-	do {
+	for (i = 0; i < entries; i++) {
 		struct io_uring_zcrx_rqe *rqe = io_zcrx_get_rqe(ifq, mask);
 		struct io_zcrx_area *area;
 		struct net_iov *niov;
@@ -430,7 +431,7 @@ static void io_zcrx_ring_refill(struct page_pool *pp,
 		if (!io_zcrx_put_niov_uref(niov))
 			continue;
 		io_zc_add_pp_cache(pp, niov);
-	} while (entries--);
+	}
 
 	smp_store_release(&ifq->rq_ring->head, ifq->cached_rq_head);
 }
