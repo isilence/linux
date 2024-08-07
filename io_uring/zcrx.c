@@ -92,6 +92,9 @@ static int io_close_zc_rxq(struct io_zcrx_ifq *ifq)
 	}
 
 	rxq = __netif_get_rx_queue(ifq->dev, ifq->if_rxq);
+
+	WARN_ON_ONCE(rxq->mp_params.mp_priv != ifq);
+
 	rxq->mp_params.mp_ops = NULL;
 	rxq->mp_params.mp_priv = NULL;
 	err = netdev_rx_queue_restart(ifq->dev, ifq->if_rxq);
