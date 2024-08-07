@@ -52,20 +52,32 @@ static inline struct page *io_zcrx_iov_page(const struct net_iov *niov)
 	return area->pages[net_iov_idx(niov)];
 }
 
-static int io_open_zc_rxq(struct io_zcrx_ifq *ifq)
+static int io_open_zc_rxq(struct io_zcrx_ifq *ifq, unsigned ifq_idx)
 {
 	struct netdev_rx_queue *rxq;
+	struct net_device *dev = ifq->dev;
+	int ret;
 
 	ASSERT_RTNL();
 
-	rxq = __netif_get_rx_queue(ifq->dev, ifq->if_rxq);
+	if (ifq_idx >= dev->num_rx_queues)
+		return -EINVAL;
+	ifq_idx = array_index_nospec(ifq_idx, dev->num_rx_queues);
+
+	rxq = __netif_get_rx_queue(ifq->dev, ifq_idx);
 	if (rxq->mp_params.mp_priv)
 		return -EEXIST;
 
 	rxq->mp_params.mp_ops = &io_uring_pp_zc_ops;
 	rxq->mp_params.mp_priv = ifq;
 
-	return netdev_rx_queue_restart(ifq->dev, ifq->if_rxq);
+	ret = netdev_rx_queue_restart(ifq->dev, ifq_idx);
+	if (ret) {
+		rxq->mp_params.mp_ops = NULL;
+		rxq->mp_params.mp_priv = NULL;
+	}
+	ifq->if_rxq = ifq_idx;
+	return 0;
 }
 
 static int io_close_zc_rxq(struct io_zcrx_ifq *ifq)
@@ -74,11 +86,16 @@ static int io_close_zc_rxq(struct io_zcrx_ifq *ifq)
 	int err;
 
 	rtnl_lock();
+	if (WARN_ON_ONCE(ifq->if_rxq >= ifq->dev->num_rx_queues)) {
+		err = -EINVAL;
+		goto out;
+	}
+
 	rxq = __netif_get_rx_queue(ifq->dev, ifq->if_rxq);
 	rxq->mp_params.mp_ops = NULL;
 	rxq->mp_params.mp_priv = NULL;
-
 	err = netdev_rx_queue_restart(ifq->dev, ifq->if_rxq);
+out:
 	rtnl_unlock();
 
 	return err;
@@ -280,7 +297,6 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 		goto err;
 
 	ifq->rq_entries = reg.rq_entries;
-	ifq->if_rxq = reg.if_rxq;
 
 	ret = -ENODEV;
 	rtnl_lock();
@@ -288,7 +304,7 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 	if (!ifq->dev)
 		goto err_rtnl_unlock;
 
-	ret = io_open_zc_rxq(ifq);
+	ret = io_open_zc_rxq(ifq, reg.if_rxq);
 	if (ret)
 		goto err_rtnl_unlock;
 	rtnl_unlock();
