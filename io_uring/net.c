@@ -1286,14 +1286,14 @@ int io_send_zc_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	return io_sendmsg_setup(req, sqe);
 }
 
-static int io_sg_from_iter_iovec(struct sk_buff *skb,
+static int io_sg_from_iter_iovec(struct ubuf_info *ubuf, struct sk_buff *skb,
 				 struct iov_iter *from, size_t length)
 {
 	skb_zcopy_downgrade_managed(skb);
 	return zerocopy_fill_skb_from_iter(skb, from, length);
 }
 
-static int io_sg_from_iter(struct sk_buff *skb,
+static int io_sg_from_iter(struct ubuf_info *ubuf, struct sk_buff *skb,
 			   struct iov_iter *from, size_t length)
 {
 	struct skb_shared_info *shinfo = skb_shinfo(skb);

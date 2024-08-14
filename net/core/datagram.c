@@ -701,7 +701,7 @@ int __zerocopy_sg_from_iter(struct msghdr *msg, struct sock *sk,
 	int ret;
 
 	if (msg && msg->msg_ubuf && msg->sg_from_iter)
-		ret = msg->sg_from_iter(skb, from, length);
+		ret = msg->sg_from_iter(msg->msg_ubuf, skb, from, length);
 	else
 		ret = zerocopy_fill_skb_from_iter(skb, from, length);
 
