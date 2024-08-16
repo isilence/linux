@@ -734,12 +734,19 @@ struct io_uring_buf_status {
 	__u32	resv[8];
 };
 
+enum io_uring_napi_add_flags {
+	IORING_NAPI_MANUAL = 1,
+	IORING_NAPI_ADD_NAPI_ID = 2,
+};
+
+
 /* argument for IORING_(UN)REGISTER_NAPI */
 struct io_uring_napi {
 	__u32	busy_poll_to;
 	__u8	prefer_busy_poll;
-	__u8	pad[3];
-	__u64	resv;
+	__u8	flags;
+	__u8	pad[2];
+	__u64	id;
 };
 
 /*

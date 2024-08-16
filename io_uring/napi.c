@@ -10,6 +10,7 @@
 
 struct io_napi_entry {
 	unsigned int		napi_id;
+	bool			autoremove;
 	struct list_head	list;
 
 	unsigned long		timeout;
@@ -31,6 +32,27 @@ static struct io_napi_entry *io_napi_hash_find(struct hlist_head *hash_list,
 	}
 
 	return NULL;
+}
+
+static int io_napi_id_add(struct io_ring_ctx *ctx, unsigned napi_id)
+{
+	struct io_napi_entry *e;
+
+	/* Non-NAPI IDs can be rejected. */
+	if (napi_id < MIN_NAPI_ID)
+		return -EINVAL;
+
+	e = kzalloc(sizeof(*e), GFP_KERNEL_ACCOUNT);
+	if (!e)
+		return -ENOMEM;
+
+	e->napi_id = napi_id;
+	e->autoremove = false;
+
+	spin_lock(&ctx->napi_lock);
+	list_add_tail(&e->list, &ctx->napi_list);
+	spin_unlock(&ctx->napi_lock);
+	return 0;
 }
 
 void __io_napi_add(struct io_ring_ctx *ctx, struct socket *sock)
@@ -67,6 +89,7 @@ void __io_napi_add(struct io_ring_ctx *ctx, struct socket *sock)
 
 	e->napi_id = napi_id;
 	e->timeout = jiffies + NAPI_TIMEOUT;
+	e->autoremove = true;
 
 	spin_lock(&ctx->napi_lock);
 	if (unlikely(io_napi_hash_find(hash_list, napi_id))) {
@@ -144,7 +167,7 @@ static bool __io_napi_do_busy_loop(struct io_ring_ctx *ctx,
 		napi_busy_loop_rcu(e->napi_id, loop_end, loop_end_arg,
 				   ctx->napi_prefer_busy_poll, BUSY_POLL_BUDGET);
 
-		if (time_after(jiffies, e->timeout))
+		if (e->autoremove && time_after(jiffies, e->timeout))
 			is_stale = true;
 	}
 
@@ -197,11 +220,12 @@ void io_napi_free(struct io_ring_ctx *ctx)
 {
 	struct io_napi_entry *e;
 	LIST_HEAD(napi_list);
-	unsigned int i;
 
 	spin_lock(&ctx->napi_lock);
-	hash_for_each(ctx->napi_ht, i, e, node) {
+	while ((e = list_first_entry_or_null(&ctx->napi_list,
+					struct io_napi_entry, list))) {
 		hash_del_rcu(&e->node);
+		list_del_init(&e->list);
 		kfree_rcu(e, rcu);
 	}
 	spin_unlock(&ctx->napi_lock);
@@ -221,10 +245,24 @@ int io_register_napi(struct io_ring_ctx *ctx, void __user *arg)
 		.prefer_busy_poll = ctx->napi_prefer_busy_poll
 	};
 	struct io_uring_napi napi;
+	int flags;
 
 	if (copy_from_user(&napi, arg, sizeof(napi)))
 		return -EFAULT;
-	if (napi.pad[0] || napi.pad[1] || napi.pad[2] || napi.resv)
+	if (napi.pad[0] || napi.pad[1])
+		return -EINVAL;
+
+	flags = napi.flags;
+	if (flags & ~(IORING_NAPI_ADD_NAPI_ID|IORING_NAPI_MANUAL))
+		return -EINVAL;
+
+	if (flags & IORING_NAPI_ADD_NAPI_ID) {
+		if (flags & IORING_NAPI_MANUAL)
+			return -EINVAL;
+		return io_napi_id_add(ctx, napi.id);
+	}
+
+	if (napi.id)
 		return -EINVAL;
 
 	if (copy_to_user(arg, &curr, sizeof(curr)))
@@ -233,7 +271,7 @@ int io_register_napi(struct io_ring_ctx *ctx, void __user *arg)
 	WRITE_ONCE(ctx->napi_busy_poll_to, napi.busy_poll_to);
 	WRITE_ONCE(ctx->napi_prefer_busy_poll, !!napi.prefer_busy_poll);
 	WRITE_ONCE(ctx->napi_enabled, true);
-	WRITE_ONCE(ctx->napi_polladd, true);
+	WRITE_ONCE(ctx->napi_polladd, !(flags & IORING_NAPI_MANUAL));
 	return 0;
 }
 
