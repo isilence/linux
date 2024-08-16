@@ -101,6 +101,7 @@ static int io_link_skb(struct sk_buff *skb, struct ubuf_info *uarg)
 
 static const struct ubuf_info_ops io_ubuf_ops = {
 	.complete = io_tx_ubuf_complete,
+	.sg_from_iter = io_sg_from_iter,
 	.link_skb = io_link_skb,
 };
 

@@ -529,6 +529,8 @@ enum {
 struct ubuf_info_ops {
 	void (*complete)(struct sk_buff *, struct ubuf_info *,
 			 bool zerocopy_success);
+	int (*sg_from_iter)(struct ubuf_info *ubuf, struct sk_buff *skb,
+			    struct iov_iter *from, size_t length);
 	/* has to be compatible with skb_zcopy_set() */
 	int (*link_skb)(struct sk_buff *skb, struct ubuf_info *uarg);
 };
