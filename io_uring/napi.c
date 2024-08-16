@@ -233,6 +233,7 @@ int io_register_napi(struct io_ring_ctx *ctx, void __user *arg)
 	WRITE_ONCE(ctx->napi_busy_poll_to, napi.busy_poll_to);
 	WRITE_ONCE(ctx->napi_prefer_busy_poll, !!napi.prefer_busy_poll);
 	WRITE_ONCE(ctx->napi_enabled, true);
+	WRITE_ONCE(ctx->napi_polladd, true);
 	return 0;
 }
 
@@ -257,6 +258,7 @@ int io_unregister_napi(struct io_ring_ctx *ctx, void __user *arg)
 	WRITE_ONCE(ctx->napi_busy_poll_to, 0);
 	WRITE_ONCE(ctx->napi_prefer_busy_poll, false);
 	WRITE_ONCE(ctx->napi_enabled, false);
+	WRITE_ONCE(ctx->napi_polladd, false);
 	return 0;
 }
 

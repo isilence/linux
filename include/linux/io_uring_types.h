@@ -408,6 +408,7 @@ struct io_ring_ctx {
 	unsigned int		napi_busy_poll_to;
 	bool			napi_prefer_busy_poll;
 	bool			napi_enabled;
+	bool			napi_polladd;
 
 	DECLARE_HASHTABLE(napi_ht, 4);
 #endif
