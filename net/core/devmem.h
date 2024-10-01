@@ -75,14 +75,14 @@ static inline unsigned int net_iov_idx(const struct net_iov *niov)
 }
 
 static inline struct net_devmem_dmabuf_binding *
-net_iov_binding(const struct net_iov *niov)
+net_devmem_iov_binding(const struct net_iov *niov)
 {
 	return net_iov_owner(niov)->binding;
 }
 
-static inline u32 net_iov_binding_id(const struct net_iov *niov)
+static inline u32 net_devmem_iov_binding_id(const struct net_iov *niov)
 {
-	return net_iov_owner(niov)->binding->id;
+	return net_devmem_iov_binding(niov)->id;
 }
 
 static inline unsigned long net_iov_virtual_addr(const struct net_iov *niov)
