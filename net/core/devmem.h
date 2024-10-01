@@ -88,6 +88,8 @@ static inline unsigned long net_iov_virtual_addr(const struct net_iov *niov)
 
 #if defined(CONFIG_NET_DEVMEM)
 
+extern const struct memory_provider_ops dmabuf_devmem_ops;
+
 void __net_devmem_dmabuf_binding_free(struct net_devmem_dmabuf_binding *binding);
 struct net_devmem_dmabuf_binding *
 net_devmem_bind_dmabuf(struct net_device *dev, unsigned int dmabuf_fd,
