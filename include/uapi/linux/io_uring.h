@@ -647,6 +647,18 @@ struct io_uring_files_update {
 	__aligned_u64 /* __s32 * */ fds;
 };
 
+enum {
+	IORING_REGION_USER_BACKED	= 1,
+};
+
+struct io_uring_region_desc {
+	u64 user_addr;
+	u64 size;
+	u64 flags;
+	u64 mmap_offset;
+	u64 __resv[2];
+};
+
 /*
  * Register a fully sparse file space, rather than pass in an array of all
  * -1 file descriptors.
