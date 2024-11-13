@@ -591,6 +591,7 @@ void io_unregister_cqwait_reg(struct io_ring_ctx *ctx)
  * registered array is passed, avoiding two (arg + timeout) copies per
  * invocation.
  */
+__maybe_unused
 static int io_register_cqwait_reg(struct io_ring_ctx *ctx, void __user *uarg)
 {
 	struct io_uring_cqwait_reg_arg arg;
@@ -839,12 +840,6 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 		if (!arg || nr_args != 1)
 			break;
 		ret = io_register_resize_rings(ctx, arg);
-		break;
-	case IORING_REGISTER_CQWAIT_REG:
-		ret = -EINVAL;
-		if (!arg || nr_args != 1)
-			break;
-		ret = io_register_cqwait_reg(ctx, arg);
 		break;
 	default:
 		ret = -EINVAL;
