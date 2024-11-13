@@ -647,6 +647,37 @@ out_free:
 	return ret;
 }
 
+static int io_register_mapped_heap(struct io_ring_ctx *ctx, void __user *uarg)
+{
+	struct io_uring_mapped_heap_reg __user *reg_uptr = uarg;
+	struct io_uring_mapped_heap_reg reg;
+	struct io_uring_region_desc __user *rd_uptr;
+	struct io_uring_region_desc rd;
+	int ret;
+
+	if (ctx->heap_ptr)
+		return -EBUSY;
+
+	if (copy_from_user(&reg, reg_uptr, sizeof(reg)))
+		return -EFAULT;
+	rd_uptr = u64_to_user_ptr(reg.region_desc);
+	if (copy_from_user(&rd, rd_uptr, sizeof(rd)))
+		return -EFAULT;
+
+	ret = io_create_region(ctx, &ctx->heap_region, &rd);
+	if (ret)
+		return ret;
+
+	if (copy_to_user(rd_uptr, &rd, sizeof(rd))) {
+		io_free_region(ctx, &ctx->heap_region);
+		return -EFAULT;
+	}
+
+	WRITE_ONCE(ctx->heap_ptr, io_get_region_ptr(&ctx->heap_region));
+	WRITE_ONCE(ctx->heap_size, ctx->heap_region.nr_pages << PAGE_SHIFT);
+	return 0;
+}
+
 static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			       void __user *arg, unsigned nr_args)
 	__releases(ctx->uring_lock)
@@ -840,6 +871,12 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 		if (!arg || nr_args != 1)
 			break;
 		ret = io_register_resize_rings(ctx, arg);
+		break;
+	case IORING_REGISTER_MAPPED_HEAP:
+		ret = -EINVAL;
+		if (!arg || nr_args != 1)
+			break;
+		ret = io_register_mapped_heap(ctx, arg);
 		break;
 	default:
 		ret = -EINVAL;

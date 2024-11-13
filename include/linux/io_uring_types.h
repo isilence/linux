@@ -250,6 +250,9 @@ struct io_ring_ctx {
 
 		enum task_work_notify_mode	notify_method;
 		unsigned			sq_thread_idle;
+
+		void			*heap_ptr;
+		size_t			heap_size;
 	} ____cacheline_aligned_in_smp;
 
 	/* submission data */
@@ -439,6 +442,7 @@ struct io_ring_ctx {
 	struct page			**sqe_pages;
 
 	struct page			**cq_wait_page;
+	struct io_mapped_region		heap_region;
 };
 
 struct io_tw_state {

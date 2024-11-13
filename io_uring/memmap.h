@@ -26,4 +26,9 @@ void io_free_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr);
 int io_create_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr,
 		     struct io_uring_region_desc *reg);
 
+static inline void *io_get_region_ptr(struct io_mapped_region *mr)
+{
+	return mr->vmap_ptr;
+}
+
 #endif

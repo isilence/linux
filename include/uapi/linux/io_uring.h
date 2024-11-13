@@ -627,6 +627,8 @@ enum io_uring_register_op {
 	/* resize CQ ring */
 	IORING_REGISTER_RESIZE_RINGS		= 33,
 
+	IORING_REGISTER_MAPPED_HEAP		= 34,
+
 	/* this goes last */
 	IORING_REGISTER_LAST,
 
@@ -657,6 +659,10 @@ struct io_uring_region_desc {
 	u64 flags;
 	u64 mmap_offset;
 	u64 __resv[2];
+};
+
+struct io_uring_mapped_heap_reg {
+	u64 region_desc; /* struct io_uring_region_desc * */
 };
 
 /*
