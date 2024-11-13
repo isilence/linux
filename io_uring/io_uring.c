@@ -3196,16 +3196,20 @@ void __io_uring_cancel(bool cancel_all)
 static struct io_uring_reg_wait *io_get_ext_arg_reg(struct io_ring_ctx *ctx,
 			const struct io_uring_getevents_arg __user *uarg)
 {
-	struct io_uring_reg_wait *arg = READ_ONCE(ctx->cq_wait_arg);
+	void *heap = READ_ONCE(ctx->heap_ptr);
+	unsigned long offset, heap_size, end;
 
-	if (arg) {
-		unsigned int index = (unsigned int) (uintptr_t) uarg;
+	if (unlikely(!heap))
+		return ERR_PTR(-EFAULT);
 
-		if (index <= ctx->cq_wait_index)
-			return arg + index;
-	}
+	heap_size = READ_ONCE(ctx->heap_size);
+	offset = (uintptr_t)uarg;
 
-	return ERR_PTR(-EFAULT);
+	if (check_add_overflow(offset, sizeof(struct io_uring_reg_wait), &end) ||
+	    end >= heap_size)
+		return ERR_PTR(-EFAULT);
+
+	return heap + offset;
 }
 
 static int io_validate_ext_arg(struct io_ring_ctx *ctx, unsigned flags,
