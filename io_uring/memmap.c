@@ -204,12 +204,16 @@ void *__io_uaddr_map(struct page ***pages, unsigned short *npages,
 
 enum {
 	IO_REGION_F_VMAP			= 1,
+	IO_REGION_F_USER_PINNED			= 2,
 };
 
 void io_free_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr)
 {
 	if (mr->pages) {
-		unpin_user_pages(mr->pages, mr->nr_pages);
+		if (mr->flags & IO_REGION_F_USER_PINNED)
+			unpin_user_pages(mr->pages, mr->nr_pages);
+		else
+			release_pages(mr->pages, mr->nr_pages);
 		kvfree(mr->pages);
 	}
 	if ((mr->flags & IO_REGION_F_VMAP) && mr->ptr)
@@ -266,7 +270,7 @@ int io_create_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr,
 	mr->pages = pages;
 	mr->ptr = vptr;
 	mr->nr_pages = nr_pages;
-	mr->flags |= IO_REGION_F_VMAP;
+	mr->flags |= IO_REGION_F_VMAP | IO_REGION_F_USER_PINNED;
 	return 0;
 out_free:
 	if (pages_accounted)
