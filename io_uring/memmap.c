@@ -205,15 +205,22 @@ void *__io_uaddr_map(struct page ***pages, unsigned short *npages,
 enum {
 	IO_REGION_F_VMAP			= 1,
 	IO_REGION_F_USER_PINNED			= 2,
+	IO_REGION_F_SINGLE_REF			= 4,
 };
 
 void io_free_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr)
 {
 	if (mr->pages) {
+		long nr_pages = mr->nr_pages;
+
+		if (mr->flags & IO_REGION_F_SINGLE_REF)
+			nr_pages = 1;
+
 		if (mr->flags & IO_REGION_F_USER_PINNED)
-			unpin_user_pages(mr->pages, mr->nr_pages);
+			unpin_user_pages(mr->pages, nr_pages);
 		else
-			release_pages(mr->pages, mr->nr_pages);
+			release_pages(mr->pages, nr_pages);
+
 		kvfree(mr->pages);
 	}
 	if ((mr->flags & IO_REGION_F_VMAP) && mr->ptr)
