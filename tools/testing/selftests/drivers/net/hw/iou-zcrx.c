@@ -85,6 +85,7 @@ static unsigned long gettimeofday_ms(void)
 static void setup_zcrx(struct io_uring *ring)
 {
 	unsigned int ifindex;
+	unsigned int rq_entries = 4096;
 	int ret;
 
 	ifindex = if_nametoindex(cfg_ifname);
@@ -100,6 +101,22 @@ static void setup_zcrx(struct io_uring *ring)
 	if (area_ptr == MAP_FAILED)
 		error(1, 0, "mmap(): zero copy area");
 
+	ring_size = rq_entries * sizeof(struct io_uring_zcrx_rqe);
+	ring_size += sizeof(io_uring);
+	ring_size = (ring_size + 4095) & ~4095;
+	ring_ptr = mmap(NULL,
+			ring_size,
+			PROT_READ | PROT_WRITE,
+			MAP_ANONYMOUS | MAP_PRIVATE,
+			0,
+			0);
+
+	struct io_uring_region_desc region_reg = {
+		.size = ring_size,
+		.user_addr = (__u64)(unsigned long)ring_ptr,
+		.flags = IORING_MEM_REGION_TYPE_USER,
+	};
+
 	struct io_uring_zcrx_area_reg area_reg = {
 		.addr = (__u64)(unsigned long)area_ptr,
 		.len = AREA_SIZE,
@@ -109,23 +126,14 @@ static void setup_zcrx(struct io_uring *ring)
 	struct io_uring_zcrx_ifq_reg reg = {
 		.if_idx = ifindex,
 		.if_rxq = cfg_queue_id,
-		.rq_entries = 4096,
+		.rq_entries = rq_entries,
 		.area_ptr = (__u64)(unsigned long)&area_reg,
+		.region_ptr = (__u64)(unsigned long)&region_reg,
 	};
 
 	ret = io_uring_register_ifq(ring, &reg);
 	if (ret)
 		error(1, 0, "io_uring_register_ifq(): %d", ret);
-
-	ring_ptr = mmap(NULL,
-			reg.offsets.mmap_sz,
-			PROT_READ | PROT_WRITE,
-			MAP_SHARED | MAP_POPULATE,
-			ring->ring_fd,
-			IORING_OFF_RQ_RING);
-	if (ring_ptr == MAP_FAILED)
-		error(1, 0, "mmap(IORING_OFF_RQ_RING)");
-	ring_size = reg.offsets.mmap_sz;
 
 	rq_ring.khead = (unsigned int*)((char*)ring_ptr + reg.offsets.head);
 	rq_ring.ktail = (unsigned int*)((char*)ring_ptr + reg.offsets.tail);
