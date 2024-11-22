@@ -53,6 +53,8 @@
 		min(_ta, _tb); \
 	})
 
+#define ALIGN_UP(v, align) ((v + align - 1) & (align - 1))
+
 static int cfg_family = PF_UNSPEC;
 static int cfg_server = 0;
 static int cfg_client = 0;
@@ -64,7 +66,7 @@ static int cfg_queue_id = -1;
 static socklen_t cfg_alen;
 static struct sockaddr_storage cfg_addr;
 
-static char payload[SEND_SIZE] __attribute__((aligned(4096)));
+static char payload[SEND_SIZE] __attribute__((aligned(PAGE_SIZE)));
 static void *area_ptr = NULL;
 static void *ring_ptr = NULL;
 static size_t ring_size = 0;
@@ -80,6 +82,16 @@ static unsigned long gettimeofday_ms(void)
 
 	gettimeofday(&tv, NULL);
 	return (tv.tv_sec * 1000) + (tv.tv_usec / 1000);
+}
+
+static inline size_t get_refill_ring_size(unsigned int rq_entries)
+{
+	size_t size;
+
+	ring_size = rq_entries * sizeof(struct io_uring_zcrx_rqe);
+	/* add space for the header (head/tail/etc.) */
+	ring_size += PAGE_SIZE;
+	return ALIGN_UP(ring_size, 4096);
 }
 
 static void setup_zcrx(struct io_uring *ring)
@@ -101,9 +113,7 @@ static void setup_zcrx(struct io_uring *ring)
 	if (area_ptr == MAP_FAILED)
 		error(1, 0, "mmap(): zero copy area");
 
-	ring_size = rq_entries * sizeof(struct io_uring_zcrx_rqe);
-	ring_size += sizeof(io_uring);
-	ring_size = (ring_size + 4095) & ~4095;
+	ring_size = get_refill_ring_size(rq_entries);
 	ring_ptr = mmap(NULL,
 			ring_size,
 			PROT_READ | PROT_WRITE,
@@ -380,7 +390,7 @@ static void parse_opts(int argc, char **argv)
 		addr4->sin_family = AF_INET;
 		addr4->sin_port = htons(cfg_port);
 		addr4->sin_addr.s_addr = htonl(INADDR_ANY);
-		
+
 		if (addr &&
 		    inet_pton(AF_INET, addr, &(addr4->sin_addr)) != 1)
 			error(1, 0, "ipv4 parse error: %s", addr);
