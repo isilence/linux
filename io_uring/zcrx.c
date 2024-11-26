@@ -33,11 +33,6 @@ struct io_zcrx_args {
 	unsigned		nr_skbs;
 };
 
-struct io_zc_refill_data {
-	struct io_zcrx_ifq *ifq;
-	struct net_iov *niov;
-};
-
 static const struct memory_provider_ops io_uring_pp_zc_ops;
 
 static inline struct io_zcrx_area *io_zcrx_iov_to_area(const struct net_iov *niov)
@@ -81,8 +76,6 @@ static int io_open_zc_rxq(struct io_zcrx_ifq *ifq, unsigned ifq_idx)
 		ret = -EFAULT;
 		goto fail;
 	}
-	/* grab napi_id while still under rtnl */
-	ifq->napi_id = ifq->pp->p.napi->napi_id;
 	return 0;
 fail:
 	rxq->mp_params.mp_ops = NULL;
@@ -568,7 +561,6 @@ static void io_pp_zc_destroy(struct page_pool *pp)
 	page_pool_mp_release_area(pp, &ifq->area->nia);
 
 	ifq->pp = NULL;
-	ifq->napi_id = 0;
 
 	if (WARN_ON_ONCE(area->free_count != area->nia.num_niovs))
 		return;
@@ -582,34 +574,6 @@ static const struct memory_provider_ops io_uring_pp_zc_ops = {
 	.destroy		= io_pp_zc_destroy,
 	.scrub			= io_pp_zc_scrub,
 };
-
-static void io_napi_refill(void *data)
-{
-	struct io_zc_refill_data *rd = data;
-	struct io_zcrx_ifq *ifq = rd->ifq;
-	netmem_ref netmem;
-
-	if (WARN_ON_ONCE(!ifq->pp))
-		return;
-
-	netmem = page_pool_alloc_netmem(ifq->pp, GFP_ATOMIC | __GFP_NOWARN);
-	if (!netmem)
-		return;
-	if (WARN_ON_ONCE(!netmem_is_net_iov(netmem)))
-		return;
-
-	rd->niov = netmem_to_net_iov(netmem);
-}
-
-static struct net_iov *io_zc_get_buf_task_safe(struct io_zcrx_ifq *ifq)
-{
-	struct io_zc_refill_data rd = {
-		.ifq = ifq,
-	};
-
-	napi_execute(ifq->napi_id, io_napi_refill, &rd);
-	return rd.niov;
-}
 
 static bool io_zcrx_queue_cqe(struct io_kiocb *req, struct net_iov *niov,
 			      struct io_zcrx_ifq *ifq, int off, int len)
@@ -637,15 +601,25 @@ static bool io_zcrx_queue_cqe(struct io_kiocb *req, struct net_iov *niov,
 static ssize_t io_zcrx_copy_chunk(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 				  void *data, unsigned int offset, size_t len)
 {
+	struct io_zcrx_area *area = ifq->area;
 	size_t copy_size, copied = 0;
 	int ret = 0, off = 0;
 	struct page *page;
 	u8 *vaddr;
 
 	do {
-		struct net_iov *niov;
+		struct net_iov *niov = NULL;
 
-		niov = io_zc_get_buf_task_safe(ifq);
+		spin_lock_bh(&area->freelist_lock);
+		if (area->free_count) {
+			u32 pgid;
+
+			pgid = area->freelist[--area->free_count];
+			niov = &area->nia.niovs[pgid];
+			page_pool_fragment_netmem(net_iov_to_netmem(niov), 1);
+			atomic_dec(&niov->pp->pages_state_release_cnt);
+		}
+		spin_unlock_bh(&area->freelist_lock);
 		if (!niov) {
 			ret = -ENOMEM;
 			break;

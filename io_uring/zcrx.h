@@ -36,7 +36,6 @@ struct io_zcrx_ifq {
 
 	u32				if_rxq;
 	netdevice_tracker		netdev_tracker;
-	unsigned			napi_id;
 };
 
 #if defined(CONFIG_IO_URING_ZCRX)
