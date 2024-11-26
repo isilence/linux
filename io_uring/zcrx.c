@@ -161,6 +161,8 @@ static void io_zcrx_free_area(struct io_zcrx_area *area)
 		unpin_user_pages(area->pages, area->nia.num_niovs);
 		kvfree(area->pages);
 	}
+	if (area->user_refs)
+		kvfree(area->user_refs);
 	kfree(area);
 }
 
@@ -210,11 +212,17 @@ static int io_zcrx_create_area(struct io_ring_ctx *ctx,
 	if (!area->freelist)
 		goto err;
 
+	area->user_refs = kvmalloc_array(nr_pages, sizeof(area->user_refs[0]),
+					GFP_KERNEL | __GFP_ZERO);
+	if (!area->user_refs)
+		goto err;
+
 	for (i = 0; i < nr_pages; i++) {
 		struct net_iov *niov = &area->nia.niovs[i];
 
 		niov->owner = &area->nia;
 		area->freelist[i] = i;
+		atomic_set(&area->user_refs[i], 0);
 	}
 
 	area->free_count = nr_pages;
@@ -367,22 +375,32 @@ void io_shutdown_zcrx_ifqs(struct io_ring_ctx *ctx)
 		io_close_zc_rxq(ctx->ifq);
 }
 
-static void io_zcrx_get_buf_uref(struct net_iov *niov)
+static bool io_zcrx_niov_put(struct net_iov *niov)
 {
-	atomic_long_add(IO_ZC_RX_UREF, &niov->pp_ref_count);
+	return atomic_long_dec_and_test(&niov->pp_ref_count);
 }
 
-static bool io_zcrx_niov_put(struct net_iov *niov, int nr)
+static inline atomic_t *io_get_user_counter(struct net_iov *niov)
 {
-	return atomic_long_sub_and_test(nr, &niov->pp_ref_count);
+	struct io_zcrx_area *area = io_zcrx_iov_to_area(niov);
+
+	return &area->user_refs[net_iov_idx(niov)];
+}
+
+static void io_zcrx_get_buf_uref(struct net_iov *niov)
+{
+	atomic_inc(io_get_user_counter(niov));
+	atomic_long_inc(&niov->pp_ref_count);
 }
 
 static bool io_zcrx_put_niov_uref(struct net_iov *niov)
 {
-	if (atomic_long_read(&niov->pp_ref_count) < IO_ZC_RX_UREF)
-		return false;
+	atomic_t *uref = io_get_user_counter(niov);
 
-	return io_zcrx_niov_put(niov, IO_ZC_RX_UREF);
+	if (unlikely(!atomic_read(uref)))
+		return false;
+	atomic_dec(uref);
+	return io_zcrx_niov_put(niov);
 }
 
 static inline u32 io_zcrx_rqring_entries(struct io_zcrx_ifq *ifq)
@@ -495,7 +513,7 @@ static bool io_pp_zc_release_netmem(struct page_pool *pp, netmem_ref netmem)
 
 	niov = netmem_to_net_iov(netmem);
 
-	if (io_zcrx_niov_put(niov, 1))
+	if (io_zcrx_niov_put(niov))
 		io_zcrx_recycle_niov(niov);
 	return false;
 }
