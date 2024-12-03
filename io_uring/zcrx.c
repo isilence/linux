@@ -774,7 +774,8 @@ static ssize_t io_zcrx_copy_chunk(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 }
 
 static int io_zcrx_copy_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
-			     const skb_frag_t *frag, int off, int len)
+			     const skb_frag_t *frag, int off, int len,
+			     bool steal_ref)
 {
 	struct page *page = skb_frag_page(frag);
 	u32 p_off, p_len, t, copied = 0;
@@ -789,16 +790,20 @@ static int io_zcrx_copy_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 			return copied ? copied : ret;
 		copied += ret;
 	}
+
+	if (steal_ref)
+		napi_pp_put_page(frag->netmem);
 	return copied;
 }
 
 static int io_zcrx_recv_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
-			     const skb_frag_t *frag, int off, int len)
+			     const skb_frag_t *frag, int off, int len,
+			     bool steal_ref)
 {
 	struct net_iov *niov;
 
 	if (unlikely(!skb_frag_is_net_iov(frag)))
-		return io_zcrx_copy_frag(req, ifq, frag, off, len);
+		return io_zcrx_copy_frag(req, ifq, frag, off, len, steal_ref);
 
 	niov = netmem_to_net_iov(frag->netmem);
 	if (niov->pp->mp_ops != &io_uring_pp_zc_ops ||
@@ -812,7 +817,8 @@ static int io_zcrx_recv_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 	 * Prevent it from being recycled while user is accessing it.
 	 * It has to be done before grabbing a user reference.
 	 */
-	page_pool_ref_netmem(net_iov_to_netmem(niov));
+	if (!steal_ref)
+		page_pool_ref_netmem(net_iov_to_netmem(niov));
 	io_zcrx_get_niov_uref(niov);
 	return len;
 }
@@ -826,6 +832,7 @@ io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 	struct io_kiocb *req = args->req;
 	struct sk_buff *frag_iter;
 	unsigned start, start_off = offset;
+	bool steal_frags;
 	int i, copy, end, off;
 	int ret = 0;
 
@@ -852,8 +859,9 @@ io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 	}
 
 	start = skb_headlen(skb);
+	steal_frags = !skb->cloned && len >= skb->len;
 
-	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+	for (i = 0; len && i < skb_shinfo(skb)->nr_frags; i++) {
 		const skb_frag_t *frag;
 
 		if (WARN_ON(start > offset + len))
@@ -868,17 +876,33 @@ io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 				copy = len;
 
 			off = offset - start;
-			ret = io_zcrx_recv_frag(req, ifq, frag, off, copy);
+			ret = io_zcrx_recv_frag(req, ifq, frag, off, copy,
+						steal_frags);
 			if (ret < 0)
-				goto out;
+				break;
 
 			offset += ret;
 			len -= ret;
-			if (len == 0 || ret != copy)
-				goto out;
+			if (ret != copy) {
+				ret = -1;
+				break;
+			}
 		}
 		start = end;
 	}
+
+	if (steal_frags) {
+		struct skb_shared_info *shi = skb_shinfo(skb);
+		unsigned left = shi->nr_frags - i;
+
+		if (left)
+			memmove(&shi->frags[0], &shi->frags[i],
+				(shi->nr_frags - i) * sizeof(shi->frags[0]));
+		shi->nr_frags = left;
+	}
+
+	if (ret < 0)
+		goto out;
 
 	skb_walk_frags(skb, frag_iter) {
 		if (WARN_ON(start > offset + len))
