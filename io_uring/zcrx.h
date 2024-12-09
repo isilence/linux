@@ -10,6 +10,7 @@ struct io_zcrx_area {
 	struct net_iov_area	nia;
 	struct io_zcrx_ifq	*ifq;
 
+	bool			is_mapped;
 	u16			area_id;
 	struct page		**pages;
 

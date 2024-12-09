@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/errno.h>
+#include <linux/dma-map-ops.h>
 #include <linux/mm.h>
 #include <linux/io_uring.h>
 #include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
+
+#include <net/page_pool/helpers.h>
 
 #include <uapi/linux/io_uring.h>
 
@@ -13,6 +16,69 @@
 #include "memmap.h"
 #include "zcrx.h"
 #include "rsrc.h"
+
+#define IO_DMA_ATTR (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
+
+static bool io_niov_set_dma(struct net_iov *niov, dma_addr_t dma)
+{
+	niov->dma_addr = dma;
+	return true;
+}
+
+static void __io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
+				 struct io_zcrx_area *area, int nr_mapped)
+{
+	struct device *dev = ifq->dev->dev.parent;
+	int i;
+
+	for (i = 0; i < nr_mapped; i++) {
+		struct net_iov *niov = &area->nia.niovs[i];
+		dma_addr_t dma;
+
+		dma = page_pool_get_dma_addr_netmem(net_iov_to_netmem(niov));
+		dma_unmap_page_attrs(dev, dma, PAGE_SIZE, DMA_FROM_DEVICE,
+				     IO_DMA_ATTR);
+		io_niov_set_dma(niov, 0);
+	}
+}
+
+static void io_zcrx_unmap_area(struct io_zcrx_ifq *ifq, struct io_zcrx_area *area)
+{
+	if (area->is_mapped)
+		__io_zcrx_unmap_area(ifq, area, area->nia.num_niovs);
+}
+
+static int io_zcrx_map_area(struct io_zcrx_ifq *ifq, struct io_zcrx_area *area)
+{
+	struct device *dev = ifq->dev->dev.parent;
+	int i;
+
+	if (!dev)
+		return -EINVAL;
+
+	for (i = 0; i < area->nia.num_niovs; i++) {
+		struct net_iov *niov = &area->nia.niovs[i];
+		dma_addr_t dma;
+
+		dma = dma_map_page_attrs(dev, area->pages[i], 0, PAGE_SIZE,
+					 DMA_FROM_DEVICE, IO_DMA_ATTR);
+		if (dma_mapping_error(dev, dma))
+			break;
+		if (!io_niov_set_dma(niov, dma)) {
+			dma_unmap_page_attrs(dev, dma, PAGE_SIZE,
+					     DMA_FROM_DEVICE, IO_DMA_ATTR);
+			break;
+		}
+	}
+
+	if (i != area->nia.num_niovs) {
+		__io_zcrx_unmap_area(ifq, area, i);
+		return -EINVAL;
+	}
+
+	area->is_mapped = true;
+	return 0;
+}
 
 #define IO_RQ_MAX_ENTRIES		32768
 
@@ -49,6 +115,8 @@ static void io_free_rbuf_ring(struct io_zcrx_ifq *ifq)
 
 static void io_zcrx_free_area(struct io_zcrx_area *area)
 {
+	io_zcrx_unmap_area(area->ifq, area);
+
 	kvfree(area->freelist);
 	kvfree(area->nia.niovs);
 	if (area->pages) {
@@ -204,6 +272,10 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 	ifq->dev = netdev_get_by_index(current->nsproxy->net_ns, reg.if_idx,
 					&ifq->netdev_tracker, GFP_KERNEL);
 	if (!ifq->dev)
+		goto err;
+
+	ret = io_zcrx_map_area(ifq, ifq->area);
+	if (ret)
 		goto err;
 
 	reg.offsets.rqes = sizeof(struct io_uring);
