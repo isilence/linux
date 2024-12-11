@@ -22,6 +22,7 @@ struct memory_provider_ops {
 	int (*init)(struct page_pool *pool);
 	void (*destroy)(struct page_pool *pool);
 	void (*get_info)(void *mp_priv, struct memory_provider_info *info);
+	void (*uninstall)(void *mp_priv, struct netdev_rx_queue *rxq);
 };
 
 #endif
