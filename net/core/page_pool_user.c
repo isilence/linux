@@ -7,9 +7,9 @@
 #include <net/netdev_rx_queue.h>
 #include <net/page_pool/helpers.h>
 #include <net/page_pool/types.h>
+#include <net/page_pool/memory_provider.h>
 #include <net/sock.h>
 
-#include "devmem.h"
 #include "page_pool_priv.h"
 #include "netdev-genl-gen.h"
 
@@ -214,7 +214,6 @@ static int
 page_pool_nl_fill(struct sk_buff *rsp, const struct page_pool *pool,
 		  const struct genl_info *info)
 {
-	struct net_devmem_dmabuf_binding *binding = pool->mp_priv;
 	size_t inflight, refsz;
 	void *hdr;
 
@@ -244,8 +243,16 @@ page_pool_nl_fill(struct sk_buff *rsp, const struct page_pool *pool,
 			 pool->user.detach_time))
 		goto err_cancel;
 
-	if (binding && nla_put_u32(rsp, NETDEV_A_PAGE_POOL_DMABUF, binding->id))
-		goto err_cancel;
+	if (pool->mp_ops) {
+		struct memory_provider_info info = {};
+
+		pool->mp_ops->get_info(pool->mp_priv, &info);
+
+		if (nla_put_u32(rsp, NETDEV_A_PAGE_POOL_DMABUF, info.id) ||
+		    nla_put_u32(rsp, NETDEV_A_PAGE_POOL_MEMORY_PROVIDER,
+				info.type))
+			goto err_cancel;
+	}
 
 	genlmsg_end(rsp, hdr);
 

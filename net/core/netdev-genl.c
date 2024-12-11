@@ -10,6 +10,7 @@
 #include <net/sock.h>
 #include <net/xdp.h>
 #include <net/xdp_sock.h>
+#include <net/page_pool/memory_provider.h>
 
 #include "dev.h"
 #include "devmem.h"
@@ -368,7 +369,6 @@ static int
 netdev_nl_queue_fill_one(struct sk_buff *rsp, struct net_device *netdev,
 			 u32 q_idx, u32 q_type, const struct genl_info *info)
 {
-	struct net_devmem_dmabuf_binding *binding;
 	struct netdev_rx_queue *rxq;
 	struct netdev_queue *txq;
 	void *hdr;
@@ -389,11 +389,16 @@ netdev_nl_queue_fill_one(struct sk_buff *rsp, struct net_device *netdev,
 					     rxq->napi->napi_id))
 			goto nla_put_failure;
 
-		binding = rxq->mp_params.mp_priv;
-		if (binding &&
-		    nla_put_u32(rsp, NETDEV_A_QUEUE_DMABUF, binding->id))
-			goto nla_put_failure;
+		if (rxq->mp_params.mp_ops) {
+			struct memory_provider_info info = {};
 
+			rxq->mp_params.mp_ops->get_info(rxq->mp_params.mp_priv,
+							&info);
+			if (nla_put_u32(rsp, NETDEV_A_QUEUE_DMABUF, info.id) ||
+			    nla_put_u32(rsp, NETDEV_A_QUEUE_MEMORY_PROVIDER,
+					info.type))
+				goto nla_put_failure;
+		}
 		break;
 	case NETDEV_QUEUE_TYPE_TX:
 		txq = netdev_get_tx_queue(netdev, q_idx);

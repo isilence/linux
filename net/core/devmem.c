@@ -395,9 +395,19 @@ bool mp_dmabuf_devmem_release_page(struct page_pool *pool, netmem_ref netmem)
 	return false;
 }
 
+static void mp_dmabuf_devmem_get_info(void *mp_priv,
+				      struct memory_provider_info *info)
+{
+	const struct net_devmem_dmabuf_binding *binding = mp_priv;
+
+	info->type = NETDEV_PAGE_POOL_PROVIDER_TYPE_DEVMEM;
+	info->id = binding->id;
+}
+
 static const struct memory_provider_ops dmabuf_devmem_ops = {
 	.init			= mp_dmabuf_devmem_init,
 	.destroy		= mp_dmabuf_devmem_destroy,
 	.alloc_netmems		= mp_dmabuf_devmem_alloc_netmems,
 	.release_netmem		= mp_dmabuf_devmem_release_page,
+	.get_info		= mp_dmabuf_devmem_get_info,
 };
