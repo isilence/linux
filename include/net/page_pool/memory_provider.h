@@ -10,6 +10,7 @@
 #include <net/page_pool/types.h>
 
 struct sk_buff;
+struct netdev_rx_queue;
 
 struct memory_provider_ops {
 	netmem_ref (*alloc_netmems)(struct page_pool *pool, gfp_t gfp);
@@ -17,6 +18,7 @@ struct memory_provider_ops {
 	int (*init)(struct page_pool *pool);
 	void (*destroy)(struct page_pool *pool);
 	int (*nl_report)(const struct page_pool *pool, struct sk_buff *rsp);
+	void (*uninstall)(void *mp_priv, struct netdev_rx_queue *rxq);
 };
 
 #endif
