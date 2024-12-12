@@ -492,4 +492,14 @@ static inline void page_pool_nid_changed(struct page_pool *pool, int new_nid)
 		page_pool_update_nid(pool, new_nid);
 }
 
+#if defined(CONFIG_PAGE_POOL)
+bool page_pool_set_dma_addr_netmem(netmem_ref netmem, dma_addr_t addr);
+#else
+static inline bool page_pool_set_dma_addr_netmem(netmem_ref netmem,
+						 dma_addr_t addr)
+{
+	return false;
+}
+#endif
+
 #endif /* _NET_PAGE_POOL_HELPERS_H */
