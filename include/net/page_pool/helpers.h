@@ -457,11 +457,16 @@ static inline void page_pool_nid_changed(struct page_pool *pool, int new_nid)
 #if defined(CONFIG_PAGE_POOL)
 void page_pool_set_pp_info(struct page_pool *pool, netmem_ref netmem);
 void page_pool_clear_pp_info(netmem_ref netmem);
+bool page_pool_set_dma_addr_netmem(netmem_ref netmem, dma_addr_t addr);
 
 void page_pool_mp_return_in_cache(struct page_pool *pool, netmem_ref netmem);
 #else
 static inline void page_pool_set_pp_info(struct page_pool *pool,
 					 netmem_ref netmem)
+{
+}
+static inline bool page_pool_set_dma_addr_netmem(netmem_ref netmem,
+						 dma_addr_t addr)
 {
 }
 static inline void page_pool_clear_pp_info(netmem_ref netmem)
