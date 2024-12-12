@@ -27,12 +27,6 @@
 
 #define IO_DMA_ATTR (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
 
-static bool io_niov_set_dma(struct net_iov *niov, dma_addr_t dma)
-{
-	niov->dma_addr = dma;
-	return true;
-}
-
 static void __io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
 				 struct io_zcrx_area *area, int nr_mapped)
 {
@@ -49,7 +43,7 @@ static void __io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
 		dma = page_pool_get_dma_addr_netmem(net_iov_to_netmem(niov));
 		dma_unmap_page_attrs(dev, dma, PAGE_SIZE, DMA_FROM_DEVICE,
 				     IO_DMA_ATTR);
-		io_niov_set_dma(niov, 0);
+		page_pool_set_dma_addr_netmem(net_iov_to_netmem(niov), 0);
 	}
 }
 
@@ -75,7 +69,7 @@ static int io_zcrx_map_area(struct io_zcrx_ifq *ifq, struct io_zcrx_area *area)
 					 DMA_FROM_DEVICE, IO_DMA_ATTR);
 		if (dma_mapping_error(dev, dma))
 			break;
-		if (!io_niov_set_dma(niov, dma)) {
+		if (page_pool_set_dma_addr_netmem(net_iov_to_netmem(niov), dma)) {
 			dma_unmap_page_attrs(dev, dma, PAGE_SIZE,
 					     DMA_FROM_DEVICE, IO_DMA_ATTR);
 			break;
