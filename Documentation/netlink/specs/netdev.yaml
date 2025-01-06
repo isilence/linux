@@ -78,6 +78,10 @@ definitions:
     name: qstats-scope
     type: flags
     entries: [ queue ]
+  -
+    name: page-pool-provider-type
+    type: enum
+    entries: [ none, devmem, io_uring ]
 
 attribute-sets:
   -
@@ -171,6 +175,11 @@ attribute-sets:
         name: dmabuf
         doc: ID of the dmabuf this page-pool is attached to.
         type: u32
+      -
+        name: memory-provider
+        doc: type of the memory provider attached to this page-pool
+        type: u32
+        enum: page-pool-provider-type
   -
     name: page-pool-info
     subset-of: page-pool
@@ -296,6 +305,11 @@ attribute-sets:
         name: dmabuf
         doc: ID of the dmabuf attached to this queue, if any.
         type: u32
+      -
+        name: memory-provider
+        doc: type of the memory provider attached to this page-pool
+        type: u32
+        enum: page-pool-provider-type
 
   -
     name: qstats
