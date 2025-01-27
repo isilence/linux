@@ -99,6 +99,7 @@
 #include "msg_ring.h"
 #include "memmap.h"
 #include "zcrx.h"
+#include "bpf.h"
 
 #include "timeout.h"
 #include "poll.h"
@@ -2830,6 +2831,7 @@ static __cold void io_req_caches_free(struct io_ring_ctx *ctx)
 static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 {
 	io_sq_thread_finish(ctx);
+	io_unregister_bpf(ctx);
 
 	mutex_lock(&ctx->uring_lock);
 	io_sqe_buffers_unregister(ctx);
