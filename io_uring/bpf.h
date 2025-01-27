@@ -8,6 +8,9 @@
 #include "io_uring.h"
 
 struct io_uring_ops {
+	__u32 ring_fd;
+
+	struct io_ring_ctx *ctx;
 };
 
 static inline bool io_bpf_attached(struct io_ring_ctx *ctx)

@@ -3,6 +3,8 @@
 #include "bpf.h"
 #include "register.h"
 
+DEFINE_MUTEX(io_bpf_ctrl_mutex);
+
 static struct io_uring_ops io_bpf_ops_stubs = {
 };
 
@@ -50,20 +52,83 @@ static int bpf_io_init_member(const struct btf_type *t,
 			       const struct btf_member *member,
 			       void *kdata, const void *udata)
 {
+	u32 moff = __btf_member_bit_offset(t, member) / 8;
+	const struct io_uring_ops *uops = udata;
+	struct io_uring_ops *ops = kdata;
+
+	switch (moff) {
+	case offsetof(struct io_uring_ops, ring_fd):
+		ops->ring_fd = uops->ring_fd;
+		return 1;
+	}
+	return 0;
+}
+
+static int io_register_bpf_ops(struct io_ring_ctx *ctx, struct io_uring_ops *ops)
+{
+	if (ctx->bpf_ops)
+		return -EBUSY;
+	if (!(ctx->flags & IORING_SETUP_DEFER_TASKRUN))
+		return -EOPNOTSUPP;
+
+	percpu_ref_get(&ctx->refs);
+	ops->ctx = ctx;
+	ctx->bpf_ops = ops;
 	return 0;
 }
 
 static int bpf_io_reg(void *kdata, struct bpf_link *link)
 {
-	return -EOPNOTSUPP;
+	struct io_uring_ops *ops = kdata;
+	struct io_ring_ctx *ctx;
+	struct file *file;
+	int ret;
+
+	file = io_uring_register_get_file(ops->ring_fd, false);
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+
+	ctx = file->private_data;
+	scoped_guard(mutex, &ctx->uring_lock)
+		ret = io_register_bpf_ops(ctx, ops);
+
+	fput(file);
+	return ret;
 }
 
 static void bpf_io_unreg(void *kdata, struct bpf_link *link)
 {
+	struct io_uring_ops *ops = kdata;
+	struct io_ring_ctx *ctx;
+
+	guard(mutex)(&io_bpf_ctrl_mutex);
+
+	ctx = ops->ctx;
+	ops->ctx = NULL;
+
+	if (ctx) {
+		scoped_guard(mutex, &ctx->uring_lock) {
+			if (ctx->bpf_ops == ops)
+				ctx->bpf_ops = NULL;
+		}
+		percpu_ref_put(&ctx->refs);
+	}
 }
 
 void io_unregister_bpf_ops(struct io_ring_ctx *ctx)
 {
+	struct io_uring_ops *ops;
+
+	guard(mutex)(&io_bpf_ctrl_mutex);
+	guard(mutex)(&ctx->uring_lock);
+
+	ops = ctx->bpf_ops;
+	ctx->bpf_ops = NULL;
+
+	if (ops && ops->ctx) {
+		percpu_ref_put(&ctx->refs);
+		ops->ctx = NULL;
+	}
 }
 
 static struct bpf_struct_ops bpf_io_uring_ops = {
