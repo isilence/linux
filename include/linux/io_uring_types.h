@@ -8,6 +8,8 @@
 #include <linux/llist.h>
 #include <uapi/linux/io_uring.h>
 
+struct io_uring_ops;
+
 enum {
 	/*
 	 * A hint to not wake right away but delay until there are enough of
@@ -344,6 +346,8 @@ struct io_ring_ctx {
 
 		void			*cq_wait_arg;
 		size_t			cq_wait_size;
+
+		struct io_uring_ops	*bpf_ops;
 	} ____cacheline_aligned_in_smp;
 
 	/*

@@ -98,6 +98,7 @@
 #include "msg_ring.h"
 #include "memmap.h"
 #include "zcrx.h"
+#include "bpf.h"
 
 #include "timeout.h"
 #include "poll.h"
@@ -2869,6 +2870,8 @@ static __cold void io_ring_exit_work(struct work_struct *work)
 	struct io_tctx_exit exit;
 	struct io_tctx_node *node;
 	int ret;
+
+	io_unregister_bpf_ops(ctx);
 
 	/*
 	 * If we're doing polled IO and end up having requests being
