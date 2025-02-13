@@ -692,11 +692,10 @@ int zerocopy_fill_skb_from_iter(struct sk_buff *skb,
 	return 0;
 }
 
-int __zerocopy_sg_from_iter(struct msghdr *msg, struct sock *sk,
+int __zerocopy_sg_from_iter(struct ubuf_info *uarg, struct sock *sk,
 			    struct sk_buff *skb, struct iov_iter *from,
 			    size_t length)
 {
-	struct ubuf_info *uarg = msg ? msg->msg_ubuf : NULL;
 	unsigned long orig_size = skb->truesize;
 	unsigned long truesize;
 	int ret;

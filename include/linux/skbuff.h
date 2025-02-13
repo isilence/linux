@@ -1713,7 +1713,7 @@ struct ubuf_info *msg_zerocopy_realloc(struct sock *sk, size_t size,
 
 void msg_zerocopy_put_abort(struct ubuf_info *uarg, bool have_uref);
 
-int __zerocopy_sg_from_iter(struct msghdr *msg, struct sock *sk,
+int __zerocopy_sg_from_iter(struct ubuf_info *uarg, struct sock *sk,
 			    struct sk_buff *skb, struct iov_iter *from,
 			    size_t length);
 
@@ -1723,7 +1723,8 @@ int zerocopy_fill_skb_from_iter(struct sk_buff *skb,
 static inline int skb_zerocopy_iter_dgram(struct sk_buff *skb,
 					  struct msghdr *msg, int len)
 {
-	return __zerocopy_sg_from_iter(msg, skb->sk, skb, &msg->msg_iter, len);
+	return __zerocopy_sg_from_iter(msg->msg_ubuf, skb->sk, skb,
+				       &msg->msg_iter, len);
 }
 
 int skb_zerocopy_iter_stream(struct sock *sk, struct sk_buff *skb,

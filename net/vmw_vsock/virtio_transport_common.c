@@ -106,7 +106,7 @@ static int virtio_transport_fill_skb(struct sk_buff *skb,
 				     bool zcopy)
 {
 	if (zcopy)
-		return __zerocopy_sg_from_iter(info->msg, NULL, skb,
+		return __zerocopy_sg_from_iter(info->msg->msg_ubuf, NULL, skb,
 					       &info->msg->msg_iter,
 					       len);
 
