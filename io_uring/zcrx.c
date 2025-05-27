@@ -883,15 +883,11 @@ static int io_pp_nl_fill(void *mp_priv, struct sk_buff *rsp,
 
 static void io_pp_uninstall(void *mp_priv, struct netdev_rx_queue *rxq)
 {
-	struct pp_memory_provider_params *p = &rxq->mp_params;
 	struct io_zcrx_ifq *ifq = mp_priv;
 
 	io_zcrx_drop_netdev(ifq);
 	if (ifq->area)
 		io_zcrx_unmap_area(ifq, ifq->area);
-
-	p->mp_ops = NULL;
-	p->mp_priv = NULL;
 }
 
 static const struct memory_provider_ops io_uring_pp_zc_ops = {
