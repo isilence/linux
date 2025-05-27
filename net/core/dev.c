@@ -11992,7 +11992,7 @@ static void dev_memory_provider_uninstall(struct net_device *dev)
 		struct netdev_rx_queue *rxq = &dev->_rx[i];
 		struct pp_memory_provider_params *p = &rxq->mp_params;
 
-		if (p->mp_ops && p->mp_ops->uninstall)
+		if (p->mp_ops)
 			p->mp_ops->uninstall(rxq->mp_params.mp_priv, rxq);
 	}
 }
