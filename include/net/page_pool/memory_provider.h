@@ -28,14 +28,14 @@ void net_mp_niov_set_page_pool(struct page_pool *pool, struct net_iov *niov);
 void net_mp_niov_clear_page_pool(struct net_iov *niov);
 
 int net_mp_open_rxq(struct net_device *dev, unsigned ifq_idx,
-		    struct pp_memory_provider_params *p);
+		    struct net_memory_provider *mp);
 int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
-		      const struct pp_memory_provider_params *p,
+		      struct net_memory_provider *mp,
 		      struct netlink_ext_ack *extack);
 void net_mp_close_rxq(struct net_device *dev, unsigned ifq_idx,
-		      struct pp_memory_provider_params *old_p);
+		      struct net_memory_provider *old_mp);
 void __net_mp_close_rxq(struct net_device *dev, unsigned int rxq_idx,
-			const struct pp_memory_provider_params *old_p);
+			struct net_memory_provider *old_mp);
 
 /**
   * net_mp_netmem_place_in_cache() - give a netmem to a page pool

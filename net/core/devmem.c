@@ -145,14 +145,8 @@ void net_devmem_unbind_dmabuf(struct net_devmem_dmabuf_binding *binding)
 		list_del(&binding->list);
 
 	xa_for_each(&binding->bound_rxqs, xa_idx, rxq) {
-		const struct pp_memory_provider_params mp_params = {
-			.mp_priv	= &binding->mp,
-			.mp_ops		= &dmabuf_devmem_ops,
-		};
-
 		rxq_idx = get_netdev_rx_queue_index(rxq);
-
-		__net_mp_close_rxq(binding->dev, rxq_idx, &mp_params);
+		__net_mp_close_rxq(binding->dev, rxq_idx, &binding->mp);
 	}
 
 	net_devmem_dmabuf_binding_put(binding);
@@ -162,15 +156,11 @@ int net_devmem_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
 				    struct net_devmem_dmabuf_binding *binding,
 				    struct netlink_ext_ack *extack)
 {
-	struct pp_memory_provider_params mp_params = {
-		.mp_priv	= &binding->mp,
-		.mp_ops		= &dmabuf_devmem_ops,
-	};
 	struct netdev_rx_queue *rxq;
 	u32 xa_idx;
 	int err;
 
-	err = __net_mp_open_rxq(dev, rxq_idx, &mp_params, extack);
+	err = __net_mp_open_rxq(dev, rxq_idx, &binding->mp, extack);
 	if (err)
 		return err;
 
@@ -183,7 +173,7 @@ int net_devmem_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
 	return 0;
 
 err_close_rxq:
-	__net_mp_close_rxq(dev, rxq_idx, &mp_params);
+	__net_mp_close_rxq(dev, rxq_idx, &binding->mp);
 	return err;
 }
 

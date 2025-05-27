@@ -88,7 +88,7 @@ err_free_new_mem:
 EXPORT_SYMBOL_NS_GPL(netdev_rx_queue_restart, "NETDEV_INTERNAL");
 
 int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
-		      const struct pp_memory_provider_params *p,
+		      struct net_memory_provider *mp,
 		      struct netlink_ext_ack *extack)
 {
 	struct netdev_rx_queue *rxq;
@@ -130,7 +130,8 @@ int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
 	}
 #endif
 
-	rxq->mp_params = *p;
+	rxq->mp_params.mp_priv = mp;
+	rxq->mp_params.mp_ops = mp->ops;
 	ret = netdev_rx_queue_restart(dev, rxq_idx);
 	if (ret) {
 		rxq->mp_params.mp_ops = NULL;
@@ -140,18 +141,18 @@ int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
 }
 
 int net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
-		    struct pp_memory_provider_params *p)
+		    struct net_memory_provider *mp)
 {
 	int ret;
 
 	netdev_lock(dev);
-	ret = __net_mp_open_rxq(dev, rxq_idx, p, NULL);
+	ret = __net_mp_open_rxq(dev, rxq_idx, mp, NULL);
 	netdev_unlock(dev);
 	return ret;
 }
 
 void __net_mp_close_rxq(struct net_device *dev, unsigned int ifq_idx,
-			const struct pp_memory_provider_params *old_p)
+			struct net_memory_provider *old_mp)
 {
 	struct netdev_rx_queue *rxq;
 	int err;
@@ -168,8 +169,7 @@ void __net_mp_close_rxq(struct net_device *dev, unsigned int ifq_idx,
 	    !rxq->mp_params.mp_ops)
 		return;
 
-	if (WARN_ON_ONCE(rxq->mp_params.mp_ops != old_p->mp_ops ||
-			 rxq->mp_params.mp_priv != old_p->mp_priv))
+	if (WARN_ON_ONCE(rxq->mp_params.mp_priv != old_mp))
 		return;
 
 	rxq->mp_params.mp_ops = NULL;
@@ -179,9 +179,9 @@ void __net_mp_close_rxq(struct net_device *dev, unsigned int ifq_idx,
 }
 
 void net_mp_close_rxq(struct net_device *dev, unsigned ifq_idx,
-		      struct pp_memory_provider_params *old_p)
+		      struct net_memory_provider *old_mp)
 {
 	netdev_lock(dev);
-	__net_mp_close_rxq(dev, ifq_idx, old_p);
+	__net_mp_close_rxq(dev, ifq_idx, old_mp);
 	netdev_unlock(dev);
 }

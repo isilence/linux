@@ -479,10 +479,6 @@ static void io_close_queue(struct io_zcrx_ifq *ifq)
 {
 	struct net_device *netdev;
 	netdevice_tracker netdev_tracker;
-	struct pp_memory_provider_params p = {
-		.mp_ops = &io_uring_pp_zc_ops,
-		.mp_priv = &ifq->mp,
-	};
 
 	if (ifq->if_rxq == -1)
 		return;
@@ -494,7 +490,7 @@ static void io_close_queue(struct io_zcrx_ifq *ifq)
 	spin_unlock(&ifq->lock);
 
 	if (netdev) {
-		net_mp_close_rxq(netdev, ifq->if_rxq, &p);
+		net_mp_close_rxq(netdev, ifq->if_rxq, &ifq->mp);
 		netdev_put(netdev, &netdev_tracker);
 	}
 	ifq->if_rxq = -1;
@@ -528,7 +524,6 @@ struct io_mapped_region *io_zcrx_get_region(struct io_ring_ctx *ctx,
 int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 			  struct io_uring_zcrx_ifq_reg __user *arg)
 {
-	struct pp_memory_provider_params mp_param = {};
 	struct io_uring_zcrx_area_reg area;
 	struct io_uring_zcrx_ifq_reg reg;
 	struct io_uring_region_desc rd;
@@ -600,9 +595,7 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 	if (ret)
 		goto err;
 
-	mp_param.mp_ops = &io_uring_pp_zc_ops;
-	mp_param.mp_priv = &ifq->mp;
-	ret = net_mp_open_rxq(ifq->netdev, reg.if_rxq, &mp_param);
+	ret = net_mp_open_rxq(ifq->netdev, reg.if_rxq, &ifq->mp);
 	if (ret)
 		goto err;
 	ifq->if_rxq = reg.if_rxq;
