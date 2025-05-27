@@ -29,6 +29,12 @@ static DEFINE_XARRAY_FLAGS(net_devmem_dmabuf_bindings, XA_FLAGS_ALLOC1);
 
 static const struct memory_provider_ops dmabuf_devmem_ops;
 
+static struct net_devmem_dmabuf_binding *
+net_devmem_pp_to_binding(struct page_pool *pp)
+{
+	return pp->mp_priv;
+}
+
 bool net_is_devmem_iov(struct net_iov *niov)
 {
 	return niov->type == NET_IOV_DMABUF;
@@ -391,8 +397,9 @@ net_devmem_get_niov_at(struct net_devmem_dmabuf_binding *binding,
 
 int mp_dmabuf_devmem_init(struct page_pool *pool)
 {
-	struct net_devmem_dmabuf_binding *binding = pool->mp_priv;
+	struct net_devmem_dmabuf_binding *binding;
 
+	binding = net_devmem_pp_to_binding(pool);
 	if (!binding)
 		return -EINVAL;
 
@@ -411,10 +418,11 @@ int mp_dmabuf_devmem_init(struct page_pool *pool)
 
 netmem_ref mp_dmabuf_devmem_alloc_netmems(struct page_pool *pool, gfp_t gfp)
 {
-	struct net_devmem_dmabuf_binding *binding = pool->mp_priv;
+	struct net_devmem_dmabuf_binding *binding;
 	struct net_iov *niov;
 	netmem_ref netmem;
 
+	binding = net_devmem_pp_to_binding(pool);
 	niov = net_devmem_alloc_dmabuf(binding);
 	if (!niov)
 		return 0;
@@ -430,8 +438,9 @@ netmem_ref mp_dmabuf_devmem_alloc_netmems(struct page_pool *pool, gfp_t gfp)
 
 void mp_dmabuf_devmem_destroy(struct page_pool *pool)
 {
-	struct net_devmem_dmabuf_binding *binding = pool->mp_priv;
+	struct net_devmem_dmabuf_binding *binding;
 
+	binding = net_devmem_pp_to_binding(pool);
 	net_devmem_dmabuf_binding_put(binding);
 }
 
