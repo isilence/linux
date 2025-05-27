@@ -28,9 +28,14 @@
 
 #define IO_DMA_ATTR (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
 
+static struct io_zcrx_ifq *io_net_mp_to_ifq(struct net_memory_provider *net_mp)
+{
+	return container_of(net_mp, struct io_zcrx_ifq, mp);
+}
+
 static inline struct io_zcrx_ifq *io_pp_to_ifq(struct page_pool *pp)
 {
-	return pp->mp_priv;
+	return io_net_mp_to_ifq(pp->mp_priv);
 }
 
 static inline struct io_zcrx_area *io_zcrx_iov_to_area(const struct net_iov *niov)
@@ -451,6 +456,7 @@ static struct io_zcrx_ifq *io_zcrx_ifq_alloc(struct io_ring_ctx *ctx)
 	if (!ifq)
 		return NULL;
 
+	ifq->mp.ops = &io_uring_pp_zc_ops;
 	ifq->if_rxq = -1;
 	ifq->ctx = ctx;
 	spin_lock_init(&ifq->lock);
@@ -475,7 +481,7 @@ static void io_close_queue(struct io_zcrx_ifq *ifq)
 	netdevice_tracker netdev_tracker;
 	struct pp_memory_provider_params p = {
 		.mp_ops = &io_uring_pp_zc_ops,
-		.mp_priv = ifq,
+		.mp_priv = &ifq->mp,
 	};
 
 	if (ifq->if_rxq == -1)
@@ -595,7 +601,7 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 		goto err;
 
 	mp_param.mp_ops = &io_uring_pp_zc_ops;
-	mp_param.mp_priv = ifq;
+	mp_param.mp_priv = &ifq->mp;
 	ret = net_mp_open_rxq(ifq->netdev, reg.if_rxq, &mp_param);
 	if (ret)
 		goto err;
@@ -883,7 +889,7 @@ static int io_pp_nl_fill(void *mp_priv, struct sk_buff *rsp,
 
 static void io_pp_uninstall(void *mp_priv, struct netdev_rx_queue *rxq)
 {
-	struct io_zcrx_ifq *ifq = mp_priv;
+	struct io_zcrx_ifq *ifq = io_net_mp_to_ifq(mp_priv);
 
 	io_zcrx_drop_netdev(ifq);
 	if (ifq->area)

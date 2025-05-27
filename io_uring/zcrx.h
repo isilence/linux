@@ -7,6 +7,7 @@
 #include <linux/socket.h>
 #include <net/page_pool/types.h>
 #include <net/net_trackers.h>
+#include <net/page_pool/memory_provider.h>
 
 struct io_zcrx_mem {
 	unsigned long			size;
@@ -38,6 +39,8 @@ struct io_zcrx_area {
 };
 
 struct io_zcrx_ifq {
+	struct net_memory_provider	mp;
+
 	struct io_ring_ctx		*ctx;
 	struct io_zcrx_area		*area;
 
