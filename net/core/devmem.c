@@ -38,7 +38,7 @@ net_devmem_mp_to_binding(struct net_memory_provider *mp)
 static struct net_devmem_dmabuf_binding *
 net_devmem_pp_to_binding(struct page_pool *pp)
 {
-	return net_devmem_mp_to_binding(pp->mp_priv);
+	return net_devmem_mp_to_binding(pp->mp);
 }
 
 bool net_is_devmem_iov(struct net_iov *niov)

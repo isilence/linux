@@ -157,6 +157,7 @@ struct page_pool_stats {
 #define PAGE_POOL_FRAG_GROUP_ALIGN	(4 * sizeof(long))
 
 struct memory_provider_ops;
+struct net_memory_provider;
 
 struct pp_memory_provider_params {
 	void *mp_priv;
@@ -222,7 +223,7 @@ struct page_pool {
 	 */
 	struct ptr_ring ring;
 
-	void *mp_priv;
+	struct net_memory_provider *mp;
 	const struct memory_provider_ops *mp_ops;
 
 	struct xarray dma_mapped;

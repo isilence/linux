@@ -282,8 +282,8 @@ static int page_pool_init(struct page_pool *pool,
 		netdev_assert_locked(pool->slow.netdev);
 		rxq = __netif_get_rx_queue(pool->slow.netdev,
 					   pool->slow.queue_idx);
-		pool->mp_priv = rxq->mp_params.mp_priv;
-		pool->mp_ops = rxq->mp_params.mp_ops;
+		pool->mp = rxq->mp_params.mp_priv;
+		pool->mp_ops = pool->mp ? pool->mp->ops : NULL;
 	}
 
 	if (pool->mp_ops) {

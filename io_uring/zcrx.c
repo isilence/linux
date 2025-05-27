@@ -35,7 +35,7 @@ static struct io_zcrx_ifq *io_net_mp_to_ifq(struct net_memory_provider *net_mp)
 
 static inline struct io_zcrx_ifq *io_pp_to_ifq(struct page_pool *pp)
 {
-	return io_net_mp_to_ifq(pp->mp_priv);
+	return io_net_mp_to_ifq(pp->mp);
 }
 
 static inline struct io_zcrx_area *io_zcrx_iov_to_area(const struct net_iov *niov)
