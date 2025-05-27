@@ -10450,7 +10450,7 @@ u32 dev_get_min_mp_channel_count(const struct net_device *dev)
 	netdev_ops_assert_locked(dev);
 
 	for (i = dev->real_num_rx_queues - 1; i >= 0; i--)
-		if (dev->_rx[i].mp_params.mp_priv)
+		if (dev->_rx[i].mp)
 			/* The channel count is the idx plus 1. */
 			return i + 1;
 
@@ -11990,12 +11990,10 @@ static void dev_memory_provider_uninstall(struct net_device *dev)
 
 	for (i = 0; i < dev->real_num_rx_queues; i++) {
 		struct netdev_rx_queue *rxq = &dev->_rx[i];
-		struct pp_memory_provider_params *p = &rxq->mp_params;
 
-		if (p->mp_ops) {
-			p->mp_ops->uninstall(rxq->mp_params.mp_priv, rxq);
-			p->mp_ops = NULL;
-			p->mp_priv = NULL;
+		if (rxq->mp) {
+			rxq->mp->ops->uninstall(rxq->mp, rxq);
+			rxq->mp = NULL;
 		}
 	}
 }

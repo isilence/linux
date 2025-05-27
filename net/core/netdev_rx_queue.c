@@ -119,7 +119,7 @@ int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
 	}
 
 	rxq = __netif_get_rx_queue(dev, rxq_idx);
-	if (rxq->mp_params.mp_ops) {
+	if (rxq->mp) {
 		NL_SET_ERR_MSG(extack, "designated queue already memory provider bound");
 		return -EEXIST;
 	}
@@ -130,13 +130,10 @@ int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
 	}
 #endif
 
-	rxq->mp_params.mp_priv = mp;
-	rxq->mp_params.mp_ops = mp->ops;
+	rxq->mp = mp;
 	ret = netdev_rx_queue_restart(dev, rxq_idx);
-	if (ret) {
-		rxq->mp_params.mp_ops = NULL;
-		rxq->mp_params.mp_priv = NULL;
-	}
+	if (ret)
+		rxq->mp = NULL;
 	return ret;
 }
 
@@ -165,15 +162,13 @@ void __net_mp_close_rxq(struct net_device *dev, unsigned int ifq_idx,
 	/* Callers holding a netdev ref may get here after we already
 	 * went thru shutdown via dev_memory_provider_uninstall().
 	 */
-	if (dev->reg_state > NETREG_REGISTERED &&
-	    !rxq->mp_params.mp_ops)
+	if (dev->reg_state > NETREG_REGISTERED && !rxq->mp)
 		return;
 
-	if (WARN_ON_ONCE(rxq->mp_params.mp_priv != old_mp))
+	if (WARN_ON_ONCE(rxq->mp != old_mp))
 		return;
 
-	rxq->mp_params.mp_ops = NULL;
-	rxq->mp_params.mp_priv = NULL;
+	rxq->mp = NULL;
 	err = netdev_rx_queue_restart(dev, ifq_idx);
 	WARN_ON(err && err != -ENETDOWN);
 }

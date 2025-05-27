@@ -355,7 +355,7 @@ void page_pool_unlist(struct page_pool *pool)
 int page_pool_check_memory_provider(struct net_device *dev,
 				    struct netdev_rx_queue *rxq)
 {
-	struct net_memory_provider *mp = rxq->mp_params.mp_priv;
+	struct net_memory_provider *mp = rxq->mp;
 	struct page_pool *pool;
 	struct hlist_node *n;
 

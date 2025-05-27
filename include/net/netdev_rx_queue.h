@@ -27,7 +27,8 @@ struct netdev_rx_queue {
 	struct xsk_buff_pool            *pool;
 #endif
 	struct napi_struct		*napi;
-	struct pp_memory_provider_params mp_params;
+
+	struct net_memory_provider	*mp;
 } ____cacheline_aligned_in_smp;
 
 /*

@@ -159,11 +159,6 @@ struct page_pool_stats {
 struct memory_provider_ops;
 struct net_memory_provider;
 
-struct pp_memory_provider_params {
-	void *mp_priv;
-	const struct memory_provider_ops *mp_ops;
-};
-
 struct page_pool {
 	struct page_pool_params_fast p;
 

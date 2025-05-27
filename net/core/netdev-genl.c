@@ -376,7 +376,7 @@ static int
 netdev_nl_queue_fill_one(struct sk_buff *rsp, struct net_device *netdev,
 			 u32 q_idx, u32 q_type, const struct genl_info *info)
 {
-	struct pp_memory_provider_params *params;
+	struct net_memory_provider *mp;
 	struct netdev_rx_queue *rxq;
 	struct netdev_queue *txq;
 	void *hdr;
@@ -396,9 +396,8 @@ netdev_nl_queue_fill_one(struct sk_buff *rsp, struct net_device *netdev,
 		if (nla_put_napi_id(rsp, rxq->napi))
 			goto nla_put_failure;
 
-		params = &rxq->mp_params;
-		if (params->mp_ops &&
-		    params->mp_ops->nl_fill(params->mp_priv, rsp, rxq))
+		mp = rxq->mp;
+		if (mp && mp->ops->nl_fill(mp, rsp, rxq))
 			goto nla_put_failure;
 #ifdef CONFIG_XDP_SOCKETS
 		if (rxq->pool)
