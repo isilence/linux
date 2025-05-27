@@ -30,9 +30,15 @@ static DEFINE_XARRAY_FLAGS(net_devmem_dmabuf_bindings, XA_FLAGS_ALLOC1);
 static const struct memory_provider_ops dmabuf_devmem_ops;
 
 static struct net_devmem_dmabuf_binding *
+net_devmem_mp_to_binding(struct net_memory_provider *mp)
+{
+	return container_of(mp, struct net_devmem_dmabuf_binding, mp);
+}
+
+static struct net_devmem_dmabuf_binding *
 net_devmem_pp_to_binding(struct page_pool *pp)
 {
-	return pp->mp_priv;
+	return net_devmem_mp_to_binding(pp->mp_priv);
 }
 
 bool net_is_devmem_iov(struct net_iov *niov)
@@ -140,7 +146,7 @@ void net_devmem_unbind_dmabuf(struct net_devmem_dmabuf_binding *binding)
 
 	xa_for_each(&binding->bound_rxqs, xa_idx, rxq) {
 		const struct pp_memory_provider_params mp_params = {
-			.mp_priv	= binding,
+			.mp_priv	= &binding->mp,
 			.mp_ops		= &dmabuf_devmem_ops,
 		};
 
@@ -157,7 +163,7 @@ int net_devmem_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
 				    struct netlink_ext_ack *extack)
 {
 	struct pp_memory_provider_params mp_params = {
-		.mp_priv	= binding,
+		.mp_priv	= &binding->mp,
 		.mp_ops		= &dmabuf_devmem_ops,
 	};
 	struct netdev_rx_queue *rxq;
@@ -205,6 +211,7 @@ net_devmem_bind_dmabuf(struct net_device *dev,
 		goto err_put_dmabuf;
 	}
 
+	binding->mp.ops = &dmabuf_devmem_ops;
 	binding->dev = dev;
 	xa_init_flags(&binding->bound_rxqs, XA_FLAGS_ALLOC);
 
@@ -465,18 +472,21 @@ bool mp_dmabuf_devmem_release_page(struct page_pool *pool, netmem_ref netmem)
 static int mp_dmabuf_devmem_nl_fill(void *mp_priv, struct sk_buff *rsp,
 				    struct netdev_rx_queue *rxq)
 {
-	const struct net_devmem_dmabuf_binding *binding = mp_priv;
+	const struct net_devmem_dmabuf_binding *binding;
 	int type = rxq ? NETDEV_A_QUEUE_DMABUF : NETDEV_A_PAGE_POOL_DMABUF;
 
+	binding = net_devmem_mp_to_binding(mp_priv);
 	return nla_put_u32(rsp, type, binding->id);
 }
 
 static void mp_dmabuf_devmem_uninstall(void *mp_priv,
 				       struct netdev_rx_queue *rxq)
 {
-	struct net_devmem_dmabuf_binding *binding = mp_priv;
+	struct net_devmem_dmabuf_binding *binding;
 	struct netdev_rx_queue *bound_rxq;
 	unsigned long xa_idx;
+
+	binding = net_devmem_mp_to_binding(mp_priv);
 
 	xa_for_each(&binding->bound_rxqs, xa_idx, bound_rxq) {
 		if (bound_rxq == rxq) {

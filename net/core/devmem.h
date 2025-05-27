@@ -11,10 +11,13 @@
 #define _NET_DEVMEM_H
 
 #include <net/netmem.h>
+#include <net/page_pool/memory_provider.h>
 
 struct netlink_ext_ack;
 
 struct net_devmem_dmabuf_binding {
+	struct net_memory_provider mp;
+
 	struct dma_buf *dmabuf;
 	struct dma_buf_attachment *attachment;
 	struct sg_table *sgt;
