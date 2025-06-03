@@ -1,11 +1,91 @@
 #include <linux/mutex.h>
 #include <linux/bpf_verifier.h>
 
+#include "io_uring.h"
 #include "bpf.h"
 #include "register.h"
 
 static const struct btf_type *loop_state_type;
 DEFINE_MUTEX(io_bpf_ctrl_mutex);
+
+__bpf_kfunc_start_defs();
+
+__bpf_kfunc int bpf_io_uring_submit_sqes(struct io_ring_ctx *ctx,
+					 unsigned nr)
+{
+	return io_submit_sqes(ctx, nr);
+}
+
+__bpf_kfunc int bpf_io_uring_post_cqe(struct io_ring_ctx *ctx,
+				      u64 data, u32 res, u32 cflags)
+{
+	bool posted;
+
+	posted = io_post_aux_cqe(ctx, data, res, cflags);
+	return posted ? 0 : -ENOMEM;
+}
+
+__bpf_kfunc int bpf_io_uring_queue_sqe(struct io_ring_ctx *ctx,
+					void *bpf_sqe, int mem__sz)
+{
+	unsigned tail = ctx->rings->sq.tail;
+	struct io_uring_sqe *sqe;
+
+	if (mem__sz != sizeof(*sqe))
+		return -EINVAL;
+
+	ctx->rings->sq.tail++;
+	tail &= (ctx->sq_entries - 1);
+	/* double index for 128-byte SQEs, twice as long */
+	if (ctx->flags & IORING_SETUP_SQE128)
+		tail <<= 1;
+	sqe = &ctx->sq_sqes[tail];
+	memcpy(sqe, bpf_sqe, sizeof(*sqe));
+	return 0;
+}
+
+__bpf_kfunc
+struct io_uring_cqe *bpf_io_uring_get_cqe(struct io_ring_ctx *ctx, u32 idx)
+{
+	unsigned max_entries = ctx->cq_entries;
+	struct io_uring_cqe *cqe_array = ctx->rings->cqes;
+
+	if (ctx->flags & IORING_SETUP_CQE32)
+		max_entries *= 2;
+	return &cqe_array[idx & (max_entries - 1)];
+}
+
+__bpf_kfunc
+struct io_uring_cqe *bpf_io_uring_extract_next_cqe(struct io_ring_ctx *ctx)
+{
+	struct io_rings *rings = ctx->rings;
+	unsigned int mask = ctx->cq_entries - 1;
+	unsigned head = rings->cq.head;
+	struct io_uring_cqe *cqe;
+
+	/* TODO CQE32 */
+	if (head == rings->cq.tail)
+		return NULL;
+
+	cqe = &rings->cqes[head & mask];
+	rings->cq.head++;
+	return cqe;
+}
+
+__bpf_kfunc_end_defs();
+
+BTF_KFUNCS_START(io_uring_kfunc_set)
+BTF_ID_FLAGS(func, bpf_io_uring_submit_sqes, KF_SLEEPABLE);
+BTF_ID_FLAGS(func, bpf_io_uring_post_cqe, KF_SLEEPABLE);
+BTF_ID_FLAGS(func, bpf_io_uring_queue_sqe, KF_SLEEPABLE);
+BTF_ID_FLAGS(func, bpf_io_uring_get_cqe, 0);
+BTF_ID_FLAGS(func, bpf_io_uring_extract_next_cqe, KF_RET_NULL);
+BTF_KFUNCS_END(io_uring_kfunc_set)
+
+static const struct btf_kfunc_id_set bpf_io_uring_kfunc_set = {
+	.owner = THIS_MODULE,
+	.set = &io_uring_kfunc_set,
+};
 
 static int io_bpf_ops__handle_events(struct io_ring_ctx *ctx,
 				     struct iou_loop_state *state)
@@ -186,6 +266,12 @@ static int __init io_uring_bpf_init(void)
 		return ret;
 	}
 
+	ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_STRUCT_OPS,
+					&bpf_io_uring_kfunc_set);
+	if (ret) {
+		pr_err("io_uring: Failed to register kfuncs (%d)\n", ret);
+		return ret;
+	}
 	return 0;
 }
 __initcall(io_uring_bpf_init);
