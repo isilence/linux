@@ -39,15 +39,19 @@ enum {
 	IOU_REQUEUE		= -3072,
 };
 
+struct iou_loop_state {
+	__u32			target_cq_tail;
+	ktime_t			timeout;
+};
+
 struct io_wait_queue {
+	struct iou_loop_state state;
 	struct wait_queue_entry wq;
 	struct io_ring_ctx *ctx;
-	unsigned cq_tail;
 	unsigned cq_min_tail;
 	unsigned nr_timeouts;
 	int hit_timeout;
 	ktime_t min_timeout;
-	ktime_t timeout;
 	struct hrtimer t;
 
 #ifdef CONFIG_NET_RX_BUSY_POLL
@@ -59,7 +63,8 @@ struct io_wait_queue {
 static inline bool io_should_wake(struct io_wait_queue *iowq)
 {
 	struct io_ring_ctx *ctx = iowq->ctx;
-	int dist = READ_ONCE(ctx->rings->cq.tail) - (int) iowq->cq_tail;
+	u32 target = iowq->state.target_cq_tail;
+	int dist = READ_ONCE(ctx->rings->cq.tail) - target;
 
 	/*
 	 * Wake up if we have enough events, or if a timeout occurred since we

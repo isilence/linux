@@ -2404,8 +2404,8 @@ static enum hrtimer_restart io_cqring_min_timer_wakeup(struct hrtimer *timer)
 	struct io_ring_ctx *ctx = iowq->ctx;
 
 	/* no general timeout, or shorter (or equal), we are done */
-	if (iowq->timeout == KTIME_MAX ||
-	    ktime_compare(iowq->min_timeout, iowq->timeout) >= 0)
+	if (iowq->state.timeout == KTIME_MAX ||
+	    ktime_compare(iowq->min_timeout, iowq->state.timeout) >= 0)
 		goto out_wake;
 	/* work we may need to run, wake function will see if we need to wake */
 	if (io_has_work(ctx))
@@ -2431,7 +2431,7 @@ static enum hrtimer_restart io_cqring_min_timer_wakeup(struct hrtimer *timer)
 	}
 
 	hrtimer_update_function(&iowq->t, io_cqring_timer_wakeup);
-	hrtimer_set_expires(timer, iowq->timeout);
+	hrtimer_set_expires(timer, iowq->state.timeout);
 	return HRTIMER_RESTART;
 out_wake:
 	return io_cqring_timer_wakeup(timer);
@@ -2447,7 +2447,7 @@ static int io_cqring_schedule_timeout(struct io_wait_queue *iowq,
 		hrtimer_setup_on_stack(&iowq->t, io_cqring_min_timer_wakeup, clock_id,
 				       HRTIMER_MODE_ABS);
 	} else {
-		timeout = iowq->timeout;
+		timeout = iowq->state.timeout;
 		hrtimer_setup_on_stack(&iowq->t, io_cqring_timer_wakeup, clock_id,
 				       HRTIMER_MODE_ABS);
 	}
@@ -2488,7 +2488,7 @@ static int __io_cqring_wait_schedule(struct io_ring_ctx *ctx,
 	 */
 	if (ext_arg->iowait && current_pending_io())
 		current->in_iowait = 1;
-	if (iowq->timeout != KTIME_MAX || iowq->min_timeout)
+	if (iowq->state.timeout != KTIME_MAX || iowq->min_timeout)
 		ret = io_cqring_schedule_timeout(iowq, ctx->clockid, start_time);
 	else
 		schedule();
@@ -2546,18 +2546,18 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 	iowq.wq.private = current;
 	INIT_LIST_HEAD(&iowq.wq.entry);
 	iowq.ctx = ctx;
-	iowq.cq_tail = READ_ONCE(ctx->rings->cq.head) + min_events;
+	iowq.state.target_cq_tail = READ_ONCE(ctx->rings->cq.head) + min_events;
 	iowq.cq_min_tail = READ_ONCE(ctx->rings->cq.tail);
 	iowq.nr_timeouts = atomic_read(&ctx->cq_timeouts);
 	iowq.hit_timeout = 0;
 	iowq.min_timeout = ext_arg->min_time;
-	iowq.timeout = KTIME_MAX;
+	iowq.state.timeout = KTIME_MAX;
 	start_time = io_get_time(ctx);
 
 	if (ext_arg->ts_set) {
-		iowq.timeout = timespec64_to_ktime(ext_arg->ts);
+		iowq.state.timeout = timespec64_to_ktime(ext_arg->ts);
 		if (!(flags & IORING_ENTER_ABS_TIMER))
-			iowq.timeout = ktime_add(iowq.timeout, start_time);
+			iowq.state.timeout = ktime_add(iowq.state.timeout, start_time);
 	}
 
 	if (ext_arg->sig) {
@@ -2582,7 +2582,7 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 
 		/* if min timeout has been hit, don't reset wait count */
 		if (!iowq.hit_timeout)
-			nr_wait = (int) iowq.cq_tail -
+			nr_wait = (int) iowq.state.target_cq_tail -
 					READ_ONCE(ctx->rings->cq.tail);
 		else
 			nr_wait = 1;
