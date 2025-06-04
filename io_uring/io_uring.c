@@ -2540,8 +2540,13 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 
 	if (unlikely(test_bit(IO_CHECK_CQ_OVERFLOW_BIT, &ctx->check_cq)))
 		io_cqring_do_overflow_flush(ctx);
-	if (__io_cqring_events_user(ctx) >= min_events)
+
+	if (io_bpf_attached(ctx)) {
+		if (ext_arg->min_time)
+			return -EINVAL;
+	} else if (__io_cqring_events_user(ctx) >= min_events) {
 		return 0;
+	}
 
 	init_waitqueue_func_entry(&iowq.wq, io_wake_function);
 	iowq.wq.private = current;
@@ -2620,6 +2625,21 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 		 */
 		if (ret < 0)
 			break;
+
+		if (io_bpf_attached(ctx)) {
+			ret = io_run_bpf(ctx, &iowq.state);
+			if (ret != IOU_EVENTS_WAIT)
+				break;
+
+			if (unlikely(read_thread_flags())) {
+				if (task_sigpending(current)) {
+					ret = -EINTR;
+					break;
+				}
+				cond_resched();
+			}
+			continue;
+		}
 
 		check_cq = READ_ONCE(ctx->check_cq);
 		if (unlikely(check_cq)) {
