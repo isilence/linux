@@ -559,6 +559,26 @@ static void iov_iter_folioq_advance(struct iov_iter *i, size_t size)
 	i->folioq = folioq;
 }
 
+static void iov_iter_dma_advance(struct iov_iter *i, size_t size)
+{
+	const struct dmavec *dmav, *end;
+
+	if (!i->count)
+		return;
+	i->count -= size;
+
+	size += i->iov_offset;
+
+	for (dmav = i->dmavec, end = dmav + i->nr_segs; dmav < end; dmav++) {
+		if (likely(size < dmav->len))
+			break;
+		size -= dmav->len;
+	}
+	i->iov_offset = size;
+	i->nr_segs -= dmav - i->dmavec;
+	i->dmavec = dmav;
+}
+
 void iov_iter_advance(struct iov_iter *i, size_t size)
 {
 	if (unlikely(i->count < size))
@@ -575,6 +595,8 @@ void iov_iter_advance(struct iov_iter *i, size_t size)
 		iov_iter_folioq_advance(i, size);
 	} else if (iov_iter_is_discard(i)) {
 		i->count -= size;
+	} else if (iov_iter_is_dma(i)) {
+		iov_iter_dma_advance(i, size);
 	}
 }
 EXPORT_SYMBOL(iov_iter_advance);
@@ -763,6 +785,20 @@ void iov_iter_xarray(struct iov_iter *i, unsigned int direction,
 }
 EXPORT_SYMBOL(iov_iter_xarray);
 
+void iov_iter_dma(struct iov_iter *i, unsigned int direction,
+		  struct dmavec *dmavec, unsigned nr_segs, size_t count)
+{
+	WARN_ON(direction & ~(READ | WRITE));
+	*i = (struct iov_iter){
+		.iter_type = ITER_DMAVEC,
+		.data_source = direction,
+		.dmavec = dmavec,
+		.nr_segs = nr_segs,
+		.iov_offset = 0,
+		.count = count
+	};
+}
+
 /**
  * iov_iter_discard - Initialise an I/O iterator that discards data
  * @i: The iterator to initialise.
@@ -834,6 +870,32 @@ static bool iov_iter_aligned_bvec(const struct iov_iter *i, unsigned addr_mask,
 	return true;
 }
 
+static bool iov_iter_aligned_dma(const struct iov_iter *i, unsigned addr_mask,
+				  unsigned len_mask)
+{
+	const struct dmavec *dmav = i->dmavec;
+	unsigned skip = i->iov_offset;
+	size_t size = i->count;
+
+	do {
+		size_t len = dmav->len - skip;
+
+		if (len > size)
+			len = size;
+		if (len & len_mask)
+			return false;
+		if ((unsigned long)(dmav->addr + skip) & addr_mask)
+			return false;
+
+		dmav++;
+		size -= len;
+		skip = 0;
+	} while (size);
+
+	return true;
+}
+
+
 /**
  * iov_iter_is_aligned() - Check if the addresses and lengths of each segments
  * 	are aligned to the parameters.
@@ -874,6 +936,9 @@ bool iov_iter_is_aligned(const struct iov_iter *i, unsigned addr_mask,
 		if (i->iov_offset & addr_mask)
 			return false;
 	}
+
+	if (iov_iter_is_dma(i))
+		return iov_iter_aligned_dma(i, addr_mask, len_mask);
 
 	return true;
 }
@@ -1552,7 +1617,8 @@ EXPORT_SYMBOL_GPL(import_ubuf);
 void iov_iter_restore(struct iov_iter *i, struct iov_iter_state *state)
 {
 	if (WARN_ON_ONCE(!iov_iter_is_bvec(i) && !iter_is_iovec(i) &&
-			 !iter_is_ubuf(i)) && !iov_iter_is_kvec(i))
+			 !iter_is_ubuf(i)) && !iov_iter_is_kvec(i) &&
+			 !iov_iter_is_dma(i))
 		return;
 	i->iov_offset = state->iov_offset;
 	i->count = state->count;
@@ -1570,6 +1636,8 @@ void iov_iter_restore(struct iov_iter *i, struct iov_iter_state *state)
 	BUILD_BUG_ON(sizeof(struct iovec) != sizeof(struct kvec));
 	if (iov_iter_is_bvec(i))
 		i->bvec -= state->nr_segs - i->nr_segs;
+	else if (iov_iter_is_dma(i))
+		i->dmavec -= state->nr_segs - i->nr_segs;
 	else
 		i->__iov -= state->nr_segs - i->nr_segs;
 	i->nr_segs = state->nr_segs;
