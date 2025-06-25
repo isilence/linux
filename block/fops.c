@@ -347,6 +347,8 @@ static ssize_t __blkdev_direct_IO_async(struct kiocb *iocb,
 		 * bio_iov_iter_get_pages() and set the bvec directly.
 		 */
 		bio_iov_bvec_set(bio, iter);
+	} else if (iov_iter_is_dma(iter)) {
+		bio_iov_dmavec_set(bio, iter);
 	} else {
 		ret = bio_iov_iter_get_pages(bio, iter);
 		if (unlikely(ret))
