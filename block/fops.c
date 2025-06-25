@@ -941,6 +941,7 @@ const struct file_operations def_blk_fops = {
 	.fallocate	= blkdev_fallocate,
 	.uring_cmd	= blkdev_uring_cmd,
 	.fop_flags	= FOP_BUFFER_RASYNC,
+	.get_dma_device = block_get_dma_device,
 };
 
 static __init int blkdev_init(void)

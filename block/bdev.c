@@ -61,6 +61,17 @@ struct block_device *file_bdev(struct file *bdev_file)
 }
 EXPORT_SYMBOL(file_bdev);
 
+struct device *block_get_dma_device(struct file *file)
+{
+	struct request_queue *q = bdev_get_queue(file_bdev(file));
+
+	if (!(file->f_flags & O_DIRECT))
+		return ERR_PTR(-EINVAL);
+	if (q->mq_ops && q->mq_ops->get_dma_device)
+		return q->mq_ops->get_dma_device(q);
+	return ERR_PTR(-EINVAL);
+}
+
 static void bdev_write_inode(struct block_device *bdev)
 {
 	struct inode *inode = BD_INODE(bdev);
