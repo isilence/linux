@@ -263,7 +263,12 @@ struct bio {
 
 	atomic_t		__bi_cnt;	/* pin count */
 
-	struct bio_vec		*bi_io_vec;	/* the actual vec list */
+	union {
+		struct bio_vec		*bi_io_vec;	/* the actual vec list */
+		/* Driver specific dma map, present only with BIO_DMA_TOKEN */
+		struct dma_token	*dma_token;
+	};
+
 
 	struct bio_set		*bi_pool;
 };
@@ -303,6 +308,7 @@ enum {
 	BIO_REMAPPED,
 	BIO_ZONE_WRITE_PLUGGING, /* bio handled through zone write plugging */
 	BIO_EMULATES_ZONE_APPEND, /* bio emulates a zone append operation */
+	BIO_DMA_TOKEN, /* Using premmaped dma buffers */
 	BIO_FLAG_LAST
 };
 
