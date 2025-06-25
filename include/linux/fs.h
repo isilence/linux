@@ -82,6 +82,7 @@ struct fs_context;
 struct fs_parameter_spec;
 struct fileattr;
 struct iomap_ops;
+struct device;
 
 extern void __init inode_init(void);
 extern void __init inode_init_early(void);
@@ -2190,6 +2191,7 @@ struct file_operations {
 	int (*uring_cmd_iopoll)(struct io_uring_cmd *, struct io_comp_batch *,
 				unsigned int poll_flags);
 	int (*mmap_prepare)(struct vm_area_desc *);
+	struct device *(*get_dma_device)(struct file *);
 } __randomize_layout;
 
 /* Supports async buffered reads */
