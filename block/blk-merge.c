@@ -278,6 +278,37 @@ static unsigned int bio_split_alignment(struct bio *bio,
 	return lim->logical_block_size;
 }
 
+static int bio_split_rw_at_dmavec(struct bio *bio, const struct queue_limits *lim,
+				  unsigned *segs, unsigned max_bytes)
+{
+	struct dmavec *dmav;
+	int offset, length;
+
+	/* Aggressively refuse any splitting, should be improved */
+
+	if (!lim->virt_boundary_mask)
+		return -EINVAL;
+	if (bio->bi_vcnt > lim->max_segments)
+		return -EINVAL;
+	if (bio->bi_iter.bi_size > max_bytes)
+		return -EINVAL;
+
+	dmav = &bio->bi_dmavec[bio->bi_iter.bi_idx];
+	offset = bio->bi_iter.bi_bvec_done;
+	length = bio->bi_iter.bi_size;
+	while (length > 0) {
+		if (dmav->len - offset > lim->max_segment_size) {
+			printk("max seg size\n");
+			return -EINVAL;
+		}
+		length -= dmav->len;
+		dmav++;
+	}
+	*segs = bio->bi_vcnt;
+	return 0;
+}
+
+
 /**
  * bio_split_rw_at - check if and where to split a read/write bio
  * @bio:  [in] bio to be split
@@ -296,6 +327,9 @@ int bio_split_rw_at(struct bio *bio, const struct queue_limits *lim,
 	struct bio_vec bv, bvprv, *bvprvp = NULL;
 	struct bvec_iter iter;
 	unsigned nsegs = 0, bytes = 0;
+
+	if (bio_flagged(bio, BIO_DMAVEC))
+		return bio_split_rw_at_dmavec(bio, lim, segs, max_bytes;
 
 	bio_for_each_bvec(bv, bio, iter) {
 		/*
