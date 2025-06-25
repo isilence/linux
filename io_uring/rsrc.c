@@ -10,6 +10,8 @@
 #include <linux/compat.h>
 #include <linux/io_uring.h>
 #include <linux/io_uring/cmd.h>
+#include <linux/dma-map-ops.h>
+#include <linux/dma-buf.h>
 
 #include <uapi/linux/io_uring.h>
 
@@ -18,6 +20,7 @@
 #include "rsrc.h"
 #include "memmap.h"
 #include "register.h"
+#include "dmabuf.h"
 
 struct io_rsrc_update {
 	struct file			*file;
@@ -319,6 +322,7 @@ static int __io_sqe_buffers_update(struct io_ring_ctx *ctx,
 			if (copy_from_user(&rb, u64_to_user_ptr(user_data),
 					   sizeof(rb)))
 				return -EFAULT;
+
 			user_data += sizeof(rb);
 		} else {
 			io_default_reg_buf(&rb);
@@ -343,6 +347,7 @@ static int __io_sqe_buffers_update(struct io_ring_ctx *ctx,
 		err = io_buffer_validate(iov);
 		if (err)
 			break;
+
 		node = io_sqe_buffer_register(ctx, &rb, iov, &last_hpage);
 		if (IS_ERR(node)) {
 			err = PTR_ERR(node);
@@ -793,6 +798,117 @@ bool io_check_coalesce_buffer(struct page **page_array, int nr_pages,
 	return true;
 }
 
+struct io_regbuf_dma {
+	struct io_dmabuf		dmabuf;
+	struct dmavec 			*dmav;
+	struct file			*target_file;
+};
+
+static void io_release_reg_dmabuf(struct io_regbuf_dma *db)
+{
+	if (db->dmav)
+		kfree(db->dmav);
+	io_dmabuf_release(&db->dmabuf);
+	if (db->target_file)
+		fput(db->target_file);
+
+	kfree(db);
+}
+
+static void io_release_reg_dmabuf_cb(void *priv)
+{
+	io_release_reg_dmabuf(priv);
+}
+
+static struct io_rsrc_node *io_register_dmabuf(struct io_ring_ctx *ctx,
+						struct io_uring_reg_buffer *rb,
+						struct iovec *iov)
+{
+	struct io_rsrc_node *node = NULL;
+	struct io_mapped_ubuf *imu = NULL;
+	struct io_regbuf_dma *regbuf;
+	struct file *target_file;
+	struct scatterlist *sg;
+	struct device *dev;
+	unsigned int segments;
+	int ret, i;
+
+	if (iov->iov_base || iov->iov_len)
+		return ERR_PTR(-EFAULT);
+
+	regbuf = kzalloc(sizeof(*regbuf), GFP_KERNEL);
+	if (!regbuf) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	target_file = fget(rb->target_fd);
+	if (!target_file) {
+		ret = -EBADF;
+		goto err;
+	}
+	regbuf->target_file = target_file;
+
+	if (!target_file->f_op->get_dma_device) {
+		ret = -EOPNOTSUPP;
+		goto err;
+	}
+	dev = target_file->f_op->get_dma_device(target_file);
+	if (IS_ERR(dev)) {
+		ret = PTR_ERR(dev);
+		goto err;
+	}
+
+	ret = io_dmabuf_import(&regbuf->dmabuf, rb->dmabuf_fd, dev,
+				DMA_BIDIRECTIONAL);
+	if (ret)
+		goto err;
+
+	segments = regbuf->dmabuf.sgt->nents;
+	regbuf->dmav = kmalloc_array(segments, sizeof(regbuf->dmav[0]),
+				     GFP_KERNEL_ACCOUNT);
+	if (!regbuf->dmav) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	for_each_sgtable_dma_sg(regbuf->dmabuf.sgt, sg, i) {
+		regbuf->dmav[i].addr = sg_dma_address(sg);
+		regbuf->dmav[i].len = sg_dma_len(sg);
+	}
+
+	node = io_rsrc_node_alloc(ctx, IORING_RSRC_BUFFER);
+	if (!node) {
+		ret = -ENOMEM;
+		goto err;
+	}
+	imu = io_alloc_imu(ctx, 0);
+	if (!imu) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	imu->nr_bvecs = segments;
+	imu->ubuf = 0;
+	imu->len = regbuf->dmabuf.len;
+	imu->folio_shift = 0;
+	imu->release = io_release_reg_dmabuf_cb;
+	imu->priv = regbuf;
+	imu->flags = IO_IMU_F_DMA;
+	imu->dir = IO_IMU_DEST | IO_IMU_SOURCE;
+	refcount_set(&imu->refs, 1);
+	node->buf = imu;
+	return node;
+err:
+	if (regbuf)
+		io_release_reg_dmabuf(regbuf);
+	if (imu)
+		io_free_imu(ctx, imu);
+	if (node)
+		io_cache_free(&ctx->node_cache, node);
+	return ERR_PTR(ret);
+}
+
 static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 						   struct io_uring_reg_buffer *rb,
 						   struct iovec *iov,
@@ -808,7 +924,7 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	bool coalesced = false;
 
 	if (rb->dmabuf_fd != -1 || rb->target_fd != -1)
-		return NULL;
+		return io_register_dmabuf(ctx, rb, iov);
 
 	if (!iov->iov_base)
 		return NULL;
@@ -1098,8 +1214,11 @@ static int io_import_fixed(int ddir, struct iov_iter *iter,
 	if (!(imu->dir & (1 << ddir)))
 		return -EFAULT;
 
+
 	offset = buf_addr - imu->ubuf;
 
+	if (imu->flags & IO_IMU_F_DMA)
+		return -EOPNOTSUPP;
 	if (imu->flags & IO_IMU_F_KBUF)
 		return io_import_kbuf(ddir, iter, imu, len, offset);
 
