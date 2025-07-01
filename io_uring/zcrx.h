@@ -31,8 +31,7 @@ struct io_zcrx_area {
 	u16			area_id;
 
 	/* freelist */
-	spinlock_t		freelist_lock ____cacheline_aligned_in_smp;
-	u32			free_count;
+	u32			free_count ____cacheline_aligned_in_smp;
 	u32			*freelist;
 
 	struct io_zcrx_mem	mem;
@@ -48,6 +47,8 @@ struct io_zcrx_ifq {
 	struct io_uring_zcrx_rqe	*rqes;
 	u32				cached_rq_head;
 	u32				rq_entries;
+
+	spinlock_t			freelist_lock ____cacheline_aligned_in_smp;
 
 	u32				if_rxq;
 	struct device			*dev;
