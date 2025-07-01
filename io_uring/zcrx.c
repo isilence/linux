@@ -433,7 +433,6 @@ static int io_zcrx_create_area(struct io_zcrx_ifq *ifq,
 	/* we're only supporting one area per ifq for now */
 	area->area_id = 0;
 	area_reg->rq_area_token = (u64)area->area_id << IORING_ZCRX_AREA_SHIFT;
-	spin_lock_init(&area->freelist_lock);
 
 	ret = io_zcrx_append_area(ifq, area);
 	if (!ret)
@@ -455,6 +454,7 @@ static struct io_zcrx_ifq *io_zcrx_ifq_alloc(struct io_ring_ctx *ctx)
 	ifq->if_rxq = -1;
 	ifq->ctx = ctx;
 	spin_lock_init(&ifq->rq_lock);
+	spin_lock_init(&ifq->freelist_lock);
 	mutex_init(&ifq->pp_lock);
 	return ifq;
 }
@@ -653,7 +653,7 @@ static struct net_iov *__io_zcrx_get_free_niov(struct io_zcrx_area *area)
 {
 	unsigned niov_idx;
 
-	lockdep_assert_held(&area->freelist_lock);
+	lockdep_assert_held(&area->ifq->freelist_lock);
 
 	niov_idx = area->freelist[--area->free_count];
 	return &area->nia.niovs[niov_idx];
@@ -662,10 +662,10 @@ static struct net_iov *__io_zcrx_get_free_niov(struct io_zcrx_area *area)
 static void io_zcrx_return_niov_freelist(struct net_iov *niov)
 {
 	struct io_zcrx_area *area = io_zcrx_iov_to_area(niov);
+	struct io_zcrx_ifq *ifq = area->ifq;
 
-	spin_lock_bh(&area->freelist_lock);
-	area->freelist[area->free_count++] = net_iov_idx(niov);
-	spin_unlock_bh(&area->freelist_lock);
+	scoped_guard(spinlock_bh, &ifq->freelist_lock)
+		area->freelist[area->free_count++] = net_iov_idx(niov);
 }
 
 static void io_zcrx_return_niov(struct net_iov *niov)
@@ -790,14 +790,14 @@ static void io_zcrx_refill_slow(struct page_pool *pp, struct io_zcrx_ifq *ifq)
 {
 	struct io_zcrx_area *area = ifq->area;
 
-	spin_lock_bh(&area->freelist_lock);
+	guard(spinlock_bh)(&ifq->freelist_lock);
+
 	while (area->free_count && pp->alloc.count < PP_ALLOC_CACHE_REFILL) {
 		struct net_iov *niov = __io_zcrx_get_free_niov(area);
 
 		net_mp_niov_set_page_pool(pp, niov);
 		net_mp_netmem_place_in_cache(pp, net_iov_to_netmem(niov));
 	}
-	spin_unlock_bh(&area->freelist_lock);
 }
 
 static void io_sync_allocated_niovs(struct io_zcrx_ifq *ifq,
@@ -1017,10 +1017,10 @@ static struct net_iov *io_alloc_fallback_niov(struct io_zcrx_ifq *ifq)
 	if (area->mem.is_dmabuf)
 		return NULL;
 
-	spin_lock_bh(&area->freelist_lock);
-	if (area->free_count)
-		niov = __io_zcrx_get_free_niov(area);
-	spin_unlock_bh(&area->freelist_lock);
+	scoped_guard(spinlock_bh, &ifq->freelist_lock) {
+		if (area->free_count)
+			niov = __io_zcrx_get_free_niov(area);
+	}
 
 	if (niov)
 		page_pool_fragment_netmem(net_iov_to_netmem(niov), 1);
