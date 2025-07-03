@@ -292,21 +292,6 @@ static int io_zcrx_map_area(struct io_zcrx_ifq *ifq, struct io_zcrx_area *area)
 	return ret;
 }
 
-static void io_zcrx_sync_for_device(const struct page_pool *pool,
-				    struct net_iov *niov)
-{
-#if defined(CONFIG_HAS_DMA) && defined(CONFIG_DMA_NEED_SYNC)
-	dma_addr_t dma_addr;
-
-	if (!dma_dev_need_sync(pool->p.dev))
-		return;
-
-	dma_addr = page_pool_get_dma_addr_netmem(net_iov_to_netmem(niov));
-	__dma_sync_single_for_device(pool->p.dev, dma_addr + pool->p.offset,
-				     PAGE_SIZE, pool->p.dma_dir);
-#endif
-}
-
 #define IO_RQ_MAX_ENTRIES		32768
 
 #define IO_SKBS_PER_CALL_LIMIT	20
@@ -791,7 +776,6 @@ static void io_zcrx_ring_refill(struct page_pool *pp,
 			continue;
 		}
 
-		io_zcrx_sync_for_device(pp, niov);
 		net_mp_netmem_place_in_cache(pp, netmem);
 	} while (--entries);
 
@@ -806,13 +790,29 @@ static void io_zcrx_refill_slow(struct page_pool *pp, struct io_zcrx_ifq *ifq)
 	spin_lock_bh(&area->freelist_lock);
 	while (area->free_count && pp->alloc.count < PP_ALLOC_CACHE_REFILL) {
 		struct net_iov *niov = __io_zcrx_get_free_niov(area);
-		netmem_ref netmem = net_iov_to_netmem(niov);
 
 		net_mp_niov_set_page_pool(pp, niov);
-		io_zcrx_sync_for_device(pp, niov);
-		net_mp_netmem_place_in_cache(pp, netmem);
+		net_mp_netmem_place_in_cache(pp, net_iov_to_netmem(niov));
 	}
 	spin_unlock_bh(&area->freelist_lock);
+}
+
+static void io_sync_allocated_niovs(struct page_pool *pp)
+{
+#if defined(CONFIG_HAS_DMA) && defined(CONFIG_DMA_NEED_SYNC)
+	int i;
+
+	if (!dma_dev_need_sync(pp->p.dev))
+		return;
+
+	for (i = 0; i < pp->alloc.count; i++) {
+		netmem_ref netmem = pp->alloc.cache[i];
+		dma_addr_t dma_addr = page_pool_get_dma_addr_netmem(netmem);
+
+		__dma_sync_single_for_device(pp->p.dev, dma_addr + pp->p.offset,
+					     PAGE_SIZE, pp->p.dma_dir);
+	}
+#endif
 }
 
 static netmem_ref io_pp_zc_alloc_netmems(struct page_pool *pp, gfp_t gfp)
@@ -831,6 +831,7 @@ static netmem_ref io_pp_zc_alloc_netmems(struct page_pool *pp, gfp_t gfp)
 	if (!pp->alloc.count)
 		return 0;
 out_return:
+	io_sync_allocated_niovs(pp);
 	return pp->alloc.cache[--pp->alloc.count];
 }
 
