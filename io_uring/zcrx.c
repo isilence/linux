@@ -735,7 +735,6 @@ static void io_zcrx_ring_refill(struct page_pool *pp,
 {
 	unsigned int mask = ifq->rq_entries - 1;
 	unsigned int entries;
-	netmem_ref netmem;
 
 	spin_lock_bh(&ifq->rq_lock);
 
@@ -751,6 +750,7 @@ static void io_zcrx_ring_refill(struct page_pool *pp,
 		struct io_zcrx_area *area;
 		struct net_iov *niov;
 		unsigned niov_idx, area_idx;
+		netmem_ref netmem;
 
 		area_idx = rqe->off >> IORING_ZCRX_AREA_SHIFT;
 		niov_idx = (rqe->off & ~IORING_ZCRX_AREA_MASK) >> PAGE_SHIFT;
