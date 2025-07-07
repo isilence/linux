@@ -716,10 +716,7 @@ void io_shutdown_zcrx_ifqs(struct io_ring_ctx *ctx)
 
 static inline u32 io_zcrx_rqring_entries(struct io_zcrx_ifq *ifq)
 {
-	u32 entries;
-
-	entries = smp_load_acquire(&ifq->rq_ring->tail) - ifq->cached_rq_head;
-	return min(entries, ifq->rq_entries);
+	return smp_load_acquire(&ifq->rq_ring->tail) - ifq->cached_rq_head;
 }
 
 static struct io_uring_zcrx_rqe *io_zcrx_get_rqe(struct io_zcrx_ifq *ifq,
@@ -738,8 +735,7 @@ static void io_zcrx_ring_refill(struct page_pool *pp,
 
 	guard(spinlock_bh)(&ifq->rq_lock);
 
-	entries = io_zcrx_rqring_entries(ifq);
-	entries = min_t(unsigned, entries, PP_ALLOC_CACHE_REFILL);
+	entries = min(PP_ALLOC_CACHE_REFILL, io_zcrx_rqring_entries(ifq));
 	if (unlikely(!entries))
 		return;
 
