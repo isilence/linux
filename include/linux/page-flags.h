@@ -957,6 +957,7 @@ enum pagetype {
 	PGTY_zsmalloc		= 0xf6,
 	PGTY_unaccepted		= 0xf7,
 	PGTY_large_kmalloc	= 0xf8,
+	PGTY_net_pp		= 0xf9,
 
 	PGTY_mapcount_underflow = 0xff
 };
@@ -1100,6 +1101,11 @@ PAGE_TYPE_OPS(Zsmalloc, zsmalloc, zsmalloc)
  */
 PAGE_TYPE_OPS(Unaccepted, unaccepted, unaccepted)
 FOLIO_TYPE_OPS(large_kmalloc, large_kmalloc)
+
+/*
+ * Marks pages allocated by page_pool. See (see net/core/page_pool.c)
+ */
+PAGE_TYPE_OPS(Net_pp, net_pp, net_pp)
 
 /**
  * PageHuge - Determine if the page belongs to hugetlbfs
