@@ -32,7 +32,7 @@ enum net_iov_type {
 
 struct net_iov {
 	enum net_iov_type type;
-	unsigned long pp_magic;
+	unsigned long dma_idx;
 	struct page_pool *pp;
 	struct net_iov_area *owner;
 	unsigned long dma_addr;
@@ -51,7 +51,7 @@ struct net_iov_area {
 /* These fields in struct page are used by the page_pool and net stack:
  *
  *        struct {
- *                unsigned long pp_magic;
+ *                unsigned long dma_idx;
  *                struct page_pool *pp;
  *                unsigned long _pp_mapping_pad;
  *                unsigned long dma_addr;
@@ -67,7 +67,7 @@ struct net_iov_area {
 #define NET_IOV_ASSERT_OFFSET(pg, iov)             \
 	static_assert(offsetof(struct page, pg) == \
 		      offsetof(struct net_iov, iov))
-NET_IOV_ASSERT_OFFSET(pp_magic, pp_magic);
+NET_IOV_ASSERT_OFFSET(dma_idx, dma_idx);
 NET_IOV_ASSERT_OFFSET(pp, pp);
 NET_IOV_ASSERT_OFFSET(dma_addr, dma_addr);
 NET_IOV_ASSERT_OFFSET(pp_ref_count, pp_ref_count);

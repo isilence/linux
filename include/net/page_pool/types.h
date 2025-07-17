@@ -35,7 +35,7 @@
 				 PP_FLAG_SYSTEM_POOL | PP_FLAG_ALLOW_UNREADABLE_NETMEM)
 
 /* Index limit to stay within PP_DMA_INDEX_BITS for DMA indices */
-#define PP_DMA_INDEX_LIMIT XA_LIMIT(1, BIT(PP_DMA_INDEX_BITS) - 1)
+#define PP_DMA_INDEX_LIMIT XA_LIMIT(1, BITS_PER_LONG)
 
 /*
  * Fast allocation side cache array/stack

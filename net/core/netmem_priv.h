@@ -23,32 +23,18 @@ static inline void netmem_set_dma_addr(netmem_ref netmem,
 
 static inline unsigned long netmem_get_dma_index(netmem_ref netmem)
 {
-	unsigned long magic;
-
 	if (WARN_ON_ONCE(netmem_is_net_iov(netmem)))
 		return 0;
 
-	magic = __netmem_clear_lsb(netmem)->pp_magic;
-
-	return (magic & PP_DMA_INDEX_MASK) >> PP_DMA_INDEX_SHIFT;
-}
-
-static inline void netmem_clear_dma_index(netmem_ref netmem)
-{
-	if (WARN_ON_ONCE(netmem_is_net_iov(netmem)))
-		return;
-	__netmem_clear_lsb(netmem)->pp_magic = 0;
+	return __netmem_clear_lsb(netmem)->dma_idx;
 }
 
 static inline void netmem_set_dma_index(netmem_ref netmem,
 					unsigned long id)
 {
-	unsigned long magic;
-
 	if (WARN_ON_ONCE(netmem_is_net_iov(netmem)))
 		return;
 
-	magic = PP_POISON | (id << PP_DMA_INDEX_SHIFT);
-	__netmem_clear_lsb(netmem)->pp_magic = magic;
+	__netmem_clear_lsb(netmem)->dma_idx = id;
 }
 #endif

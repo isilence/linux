@@ -69,13 +69,6 @@
 /********** security/ **********/
 #define KEY_DESTROY		0xbd
 
-/********** net/core/page_pool.c **********/
-/*
- * page_pool uses additional free bits within this value to store data, see the
- * definition of PP_DMA_INDEX_MASK in mm.h
- */
-#define PP_POISON		(0x40 + POISON_POINTER_DELTA)
-
 /********** net/core/skbuff.c **********/
 #define SKB_LIST_POISON_NEXT	((void *)(0x800 + POISON_POINTER_DELTA))
 /********** net/ **********/

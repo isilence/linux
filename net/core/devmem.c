@@ -97,7 +97,7 @@ net_devmem_alloc_dmabuf(struct net_devmem_dmabuf_binding *binding)
 	index = offset / PAGE_SIZE;
 	niov = &owner->area.niovs[index];
 
-	niov->pp_magic = 0;
+	niov->dma_idx = 0;
 	niov->pp = NULL;
 	atomic_long_set(&niov->pp_ref_count, 0);
 
