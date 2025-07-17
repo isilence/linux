@@ -534,7 +534,7 @@ static struct page *__page_pool_alloc_page_order(struct page_pool *pool,
 	}
 
 	alloc_stat_inc(pool, slow_high_order);
-	netmem_or_pp_magic(page_to_netmem(page), PP_SIGNATURE);
+	__SetPageNet_pp(page);
 	page_pool_set_pp_info(pool, page_to_netmem(page));
 
 	/* Track how many pages are held 'in-flight' */
@@ -581,7 +581,7 @@ static noinline netmem_ref __page_pool_alloc_netmems_slow(struct page_pool *pool
 		}
 
 		page_pool_set_pp_info(pool, netmem);
-		netmem_or_pp_magic(netmem, PP_SIGNATURE);
+		__SetPageNet_pp(__netmem_to_page(netmem));
 		pool->alloc.cache[pool->alloc.count++] = netmem;
 		/* Track how many pages are held 'in-flight' */
 		pool->pages_state_hold_cnt++;
@@ -704,7 +704,7 @@ static __always_inline void __page_pool_release_netmem_dma(struct page_pool *poo
 			     PAGE_SIZE << pool->p.order, pool->p.dma_dir,
 			     DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING);
 	page_pool_set_dma_addr_netmem(netmem, 0);
-	netmem_set_dma_index(netmem, 0);
+	netmem_clear_dma_index(netmem);
 }
 
 /* Disconnects a page (from a page_pool).  API users can have a need
@@ -730,7 +730,7 @@ static void page_pool_return_netmem(struct page_pool *pool, netmem_ref netmem)
 	trace_page_pool_state_release(pool, netmem, count);
 
 	if (put) {
-		netmem_clear_pp_magic(netmem);
+		__ClearPageNet_pp(__netmem_to_page(netmem));
 		page_pool_clear_pp_info(netmem);
 		put_page(netmem_to_page(netmem));
 	}
