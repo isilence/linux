@@ -113,6 +113,8 @@ static inline bool netmem_is_net_iov(const netmem_ref netmem)
  */
 static inline struct page *__netmem_to_page(netmem_ref netmem)
 {
+	DEBUG_NET_WARN_ON_ONCE(netmem_is_net_iov(netmem));
+
 	return (__force struct page *)netmem;
 }
 
