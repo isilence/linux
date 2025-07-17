@@ -308,15 +308,21 @@ static int __io_sqe_buffers_update(struct io_ring_ctx *ctx,
 
 	if (!ctx->buf_table.nr)
 		return -ENXIO;
-	if (up->flags & ~IORING_RSRC_F_EXTENDED_UPDATE)
+	if (up->flags & ~IORING_RSRC_F_EXTENDED_UPDATE) {
+		printk("invalid update flags %i\n", (int)up->flags);
 		return -EINVAL;
-	if (up->offset + nr_args > ctx->buf_table.nr)
+	}
+	if (up->offset + nr_args > ctx->buf_table.nr) {
+		printk("too many buffers\n");
 		return -EINVAL;
+	}
 
 	for (done = 0; done < nr_args; done++) {
 		struct io_uring_reg_buffer rb;
 		struct io_rsrc_node *node;
 		u64 tag = 0;
+
+		printk("update reg buffer: idx %i\n", (int)done);
 
 		if (extended_entry) {
 			if (copy_from_user(&rb, u64_to_user_ptr(user_data),
@@ -337,6 +343,7 @@ static int __io_sqe_buffers_update(struct io_ring_ctx *ctx,
 		iov = iovec_from_user(uvec, 1, 1, &fast_iov, ctx->compat);
 		if (IS_ERR(iov)) {
 			err = PTR_ERR(iov);
+			printk("iovec import failed %i\n", err);
 			break;
 		}
 		if (tags && copy_from_user(&tag, &tags[done], sizeof(tag))) {
@@ -344,16 +351,20 @@ static int __io_sqe_buffers_update(struct io_ring_ctx *ctx,
 			break;
 		}
 		err = io_buffer_validate(iov);
-		if (err)
+		if (err) {
+			printk("iovec validate failed %i\n", err);
 			break;
+		}
 		node = io_sqe_buffer_register(ctx, &rb, iov, &last_hpage);
 		if (IS_ERR(node)) {
 			err = PTR_ERR(node);
+			printk("iovec reigster failed %i\n", err);
 			break;
 		}
 		if (tag) {
 			if (!node) {
 				err = -EINVAL;
+				printk("tag check failed %i\n", err);
 				break;
 			}
 			node->tag = tag;
@@ -831,6 +842,8 @@ static struct io_rsrc_node *io_register_dmabuf(struct io_ring_ctx *ctx,
 	unsigned int segments;
 	int ret, i;
 
+	printk("dmabuf buffer register\n");
+
 	if (iov->iov_base || iov->iov_len)
 		return ERR_PTR(-EFAULT);
 
@@ -854,13 +867,16 @@ static struct io_rsrc_node *io_register_dmabuf(struct io_ring_ctx *ctx,
 	dev = target_file->f_op->get_dma_device(target_file);
 	if (IS_ERR(dev)) {
 		ret = PTR_ERR(dev);
+		printk("get_dma_device failed %i\n", ret);
 		goto err;
 	}
 
 	ret = io_dmabuf_import(&regbuf->dmabuf, rb->dmabuf_fd, dev,
 				DMA_BIDIRECTIONAL);
-	if (ret)
+	if (ret) {
+		printk("dmabuf import failed %i\n", ret);
 		goto err;
+	}
 
 	segments = regbuf->dmabuf.sgt->nents;
 	regbuf->dmav = kmalloc_array(segments, sizeof(regbuf->dmav[0]),
@@ -896,6 +912,7 @@ static struct io_rsrc_node *io_register_dmabuf(struct io_ring_ctx *ctx,
 	imu->dir = IO_IMU_DEST | IO_IMU_SOURCE;
 	refcount_set(&imu->refs, 1);
 	node->buf = imu;
+	printk("dmabuf registration complete\n");
 	return node;
 err:
 	if (regbuf)
@@ -920,6 +937,8 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	int ret, nr_pages, i;
 	struct io_imu_folio_data data;
 	bool coalesced = false;
+
+	printk("buffer register\n");
 
 	if (rb->dmabuf_fd != -1 || rb->target_fd != -1)
 		return io_register_dmabuf(ctx, rb, iov);

@@ -65,10 +65,16 @@ struct device *block_get_dma_device(struct file *file)
 {
 	struct request_queue *q = bdev_get_queue(file_bdev(file));
 
-	if (!(file->f_flags & O_DIRECT))
+	printk("block_get_dma_device()\n");
+
+	if (!(file->f_flags & O_DIRECT)) {
+		printk("Failed to get dma device for buffered file\n");
 		return ERR_PTR(-EINVAL);
+	}
 	if (q->mq_ops && q->mq_ops->get_dma_device)
 		return q->mq_ops->get_dma_device(q);
+
+	printk("No ->get_dma_device\n");
 	return ERR_PTR(-EINVAL);
 }
 
