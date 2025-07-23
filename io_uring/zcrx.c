@@ -54,10 +54,10 @@ static inline struct page *io_zcrx_iov_page(const struct net_iov *niov)
 }
 
 static int io_populate_area_dma(struct io_zcrx_ifq *ifq,
-				struct io_zcrx_area *area,
-				struct sg_table *sgt)
+				struct io_zcrx_area *area)
 {
 	unsigned niov_size = 1U << ifq->niov_shift;
+	struct sg_table *sgt = area->mem.sgt;
 	struct scatterlist *sg;
 	unsigned i, niov_idx = 0;
 
@@ -203,6 +203,7 @@ static int io_import_umem(struct io_zcrx_ifq *ifq,
 	if (ret < 0)
 		mem->account_pages = 0;
 
+	mem->sgt = &mem->page_sg_table;
 	mem->pages = pages;
 	mem->nr_folios = nr_pages;
 	mem->size = area_reg->len;
@@ -217,7 +218,8 @@ static void io_release_area_mem(struct io_zcrx_mem *mem)
 	}
 	if (mem->pages) {
 		unpin_user_pages(mem->pages, mem->nr_folios);
-		sg_free_table(&mem->page_sg_table);
+		sg_free_table(mem->sgt);
+		mem->sgt = NULL;
 		kvfree(mem->pages);
 	}
 }
@@ -269,7 +271,6 @@ static void io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
 
 static int io_zcrx_map_area(struct io_zcrx_ifq *ifq, struct io_zcrx_area *area)
 {
-	struct sg_table *sgt;
 	int ret;
 
 	guard(mutex)(&ifq->pp_lock);
@@ -281,12 +282,9 @@ static int io_zcrx_map_area(struct io_zcrx_ifq *ifq, struct io_zcrx_area *area)
 				      DMA_FROM_DEVICE, IO_DMA_ATTR);
 		if (ret < 0)
 			return ret;
-		sgt = &area->mem.page_sg_table;
-	} else {
-		sgt = area->mem.sgt;
 	}
 
-	ret = io_populate_area_dma(ifq, area, sgt);
+	ret = io_populate_area_dma(ifq, area);
 	if (ret == 0)
 		area->is_mapped = true;
 	return ret;
