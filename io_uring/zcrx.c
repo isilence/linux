@@ -595,7 +595,7 @@ int io_register_zcrx_ifq(struct io_ring_ctx *ctx,
 
 	mp_param.mp_ops = &io_uring_pp_zc_ops;
 	mp_param.mp_priv = ifq;
-	ret = net_mp_open_rxq(ifq->netdev, reg.if_rxq, &mp_param);
+	ret = net_mp_open_rxq(ifq->netdev, reg.if_rxq, &mp_param, NULL);
 	if (ret)
 		goto err;
 	ifq->if_rxq = reg.if_rxq;

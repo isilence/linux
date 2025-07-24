@@ -10,12 +10,14 @@
 #include "dev.h"
 #include "page_pool_priv.h"
 
-int netdev_rx_queue_restart(struct net_device *dev, unsigned int rxq_idx,
-			    struct netlink_ext_ack *extack)
+static int netdev_rx_queue_restart_cfg(struct net_device *dev,
+				unsigned int rxq_idx,
+				struct netlink_ext_ack *extack,
+				struct netdev_queue_config *qcfg)
 {
 	struct netdev_rx_queue *rxq = __netif_get_rx_queue(dev, rxq_idx);
 	const struct netdev_queue_mgmt_ops *qops = dev->queue_mgmt_ops;
-	struct netdev_queue_config qcfg;
+	struct netdev_queue_config tmp_qcfg;
 	void *new_mem, *old_mem;
 	int err;
 
@@ -35,15 +37,18 @@ int netdev_rx_queue_restart(struct net_device *dev, unsigned int rxq_idx,
 		goto err_free_new_mem;
 	}
 
-	netdev_queue_config(dev, rxq_idx, &qcfg);
+	if (!qcfg) {
+		qcfg = &tmp_qcfg;
+		netdev_queue_config(dev, rxq_idx, qcfg);
+	}
 
 	if (qops->ndo_queue_cfg_validate) {
-		err = qops->ndo_queue_cfg_validate(dev, rxq_idx, &qcfg, extack);
+		err = qops->ndo_queue_cfg_validate(dev, rxq_idx, qcfg, extack);
 		if (err)
 			goto err_free_old_mem;
 	}
 
-	err = qops->ndo_queue_mem_alloc(dev, &qcfg, new_mem, rxq_idx);
+	err = qops->ndo_queue_mem_alloc(dev, qcfg, new_mem, rxq_idx);
 	if (err)
 		goto err_free_old_mem;
 
@@ -56,7 +61,7 @@ int netdev_rx_queue_restart(struct net_device *dev, unsigned int rxq_idx,
 		if (err)
 			goto err_free_new_queue_mem;
 
-		err = qops->ndo_queue_start(dev, &qcfg, new_mem, rxq_idx);
+		err = qops->ndo_queue_start(dev, qcfg, new_mem, rxq_idx);
 		if (err)
 			goto err_start_queue;
 	} else {
@@ -71,7 +76,7 @@ int netdev_rx_queue_restart(struct net_device *dev, unsigned int rxq_idx,
 	return 0;
 
 err_start_queue:
-	__netdev_queue_config(dev, rxq_idx, &qcfg, false);
+	__netdev_queue_config(dev, rxq_idx, qcfg, false);
 	/* Restarting the queue with old_mem should be successful as we haven't
 	 * changed any of the queue configuration, and there is not much we can
 	 * do to recover from a failure here.
@@ -79,7 +84,7 @@ err_start_queue:
 	 * WARN if we fail to recover the old rx queue, and at least free
 	 * old_mem so we don't also leak that.
 	 */
-	if (qops->ndo_queue_start(dev, &qcfg, old_mem, rxq_idx)) {
+	if (qops->ndo_queue_start(dev, qcfg, old_mem, rxq_idx)) {
 		WARN(1,
 		     "Failed to restart old queue in error path. RX queue %d may be unhealthy.",
 		     rxq_idx);
@@ -97,11 +102,18 @@ err_free_new_mem:
 
 	return err;
 }
+
+int netdev_rx_queue_restart(struct net_device *dev, unsigned int rxq_idx,
+			    struct netlink_ext_ack *extack)
+{
+	return netdev_rx_queue_restart_cfg(dev, rxq_idx, extack, NULL);
+}
 EXPORT_SYMBOL_NS_GPL(netdev_rx_queue_restart, "NETDEV_INTERNAL");
 
-int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
-		      const struct pp_memory_provider_params *p,
-		      struct netlink_ext_ack *extack)
+static int __net_mp_open_rxq_cfg(struct net_device *dev, unsigned int rxq_idx,
+				const struct pp_memory_provider_params *p,
+				struct netlink_ext_ack *extack,
+				struct netdev_queue_config *qcfg)
 {
 	struct netdev_rx_queue *rxq;
 	int ret;
@@ -143,7 +155,7 @@ int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
 #endif
 
 	rxq->mp_params = *p;
-	ret = netdev_rx_queue_restart(dev, rxq_idx, extack);
+	ret = netdev_rx_queue_restart_cfg(dev, rxq_idx, extack, qcfg);
 	if (ret) {
 		rxq->mp_params.mp_ops = NULL;
 		rxq->mp_params.mp_priv = NULL;
@@ -151,13 +163,21 @@ int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
 	return ret;
 }
 
+int __net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
+		      const struct pp_memory_provider_params *p,
+		      struct netlink_ext_ack *extack)
+{
+	return __net_mp_open_rxq_cfg(dev, rxq_idx, p, extack, NULL);
+}
+
 int net_mp_open_rxq(struct net_device *dev, unsigned int rxq_idx,
-		    struct pp_memory_provider_params *p)
+		    struct pp_memory_provider_params *p,
+		    struct netdev_queue_config *qcfg)
 {
 	int ret;
 
 	netdev_lock(dev);
-	ret = __net_mp_open_rxq(dev, rxq_idx, p, NULL);
+	ret = __net_mp_open_rxq_cfg(dev, rxq_idx, p, NULL, qcfg);
 	netdev_unlock(dev);
 	return ret;
 }
