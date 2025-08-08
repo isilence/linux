@@ -835,6 +835,9 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			break;
 		ret = io_register_mem_region(ctx, arg);
 		break;
+	case IORING_REGISTER_ZCRX_REFILL:
+		ret = io_zcrx_return_bufs(ctx, arg, nr_args);
+		break;
 	default:
 		ret = -EINVAL;
 		break;

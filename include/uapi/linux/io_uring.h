@@ -50,7 +50,7 @@ struct io_uring_sqe {
 	};
 	__u32	len;		/* buffer size or number of iovecs */
 	union {
-		__kernel_rwf_t	rw_flags;
+		__u32		rw_flags;
 		__u32		fsync_flags;
 		__u16		poll_events;	/* compatibility */
 		__u32		poll32_events;	/* word-reversed for BE */
@@ -449,6 +449,7 @@ enum io_uring_msg_ring_flags {
 #define IORING_NOP_FILE			(1U << 1)
 #define IORING_NOP_FIXED_FILE		(1U << 2)
 #define IORING_NOP_FIXED_BUFFER		(1U << 3)
+#define IORING_NOP_TW			(1U << 4)
 
 /*
  * IO completion data structure (Completion Queue Entry)
@@ -659,6 +660,9 @@ enum io_uring_register_op {
 	IORING_REGISTER_RESIZE_RINGS		= 33,
 
 	IORING_REGISTER_MEM_REGION		= 34,
+
+	/* return zcrx buffers back into circulation */
+	IORING_REGISTER_ZCRX_REFILL		= 35,
 
 	/* this goes last */
 	IORING_REGISTER_LAST,
@@ -968,6 +972,22 @@ enum io_uring_socket_op {
 	SOCKET_URING_OP_SIOCOUTQ,
 	SOCKET_URING_OP_GETSOCKOPT,
 	SOCKET_URING_OP_SETSOCKOPT,
+	SOCKET_URING_OP_TX_TIMESTAMP,
+};
+
+/*
+ * SOCKET_URING_OP_TX_TIMESTAMP definitions
+ */
+
+#define IORING_TIMESTAMP_HW_SHIFT	16
+/* The cqe->flags bit from which the timestamp type is stored */
+#define IORING_TIMESTAMP_TYPE_SHIFT	(IORING_TIMESTAMP_HW_SHIFT + 1)
+/* The cqe->flags flag signifying whether it's a hardware timestamp */
+#define IORING_CQE_F_TSTAMP_HW		((__u32)1 << IORING_TIMESTAMP_HW_SHIFT)
+
+struct io_timespec {
+	__u64		tv_sec;
+	__u64		tv_nsec;
 };
 
 /* Zero copy receive refill queue entry */
@@ -1023,6 +1043,13 @@ struct io_uring_zcrx_ifq_reg {
 	__u32	zcrx_id;
 	__u32	__resv2;
 	__u64	__resv[3];
+};
+
+struct io_uring_zcrx_refill {
+	__u32		zcrx_id;
+	__u32		nr_entries;
+	__u64		rqes;
+	__u64		__resv[2];
 };
 
 #ifdef __cplusplus
