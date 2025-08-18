@@ -9,6 +9,7 @@
 #include <net/netdev_lock.h>
 
 struct net;
+struct netdev_queue_config;
 struct netlink_ext_ack;
 struct cpumask;
 
@@ -91,6 +92,20 @@ extern struct rw_semaphore dev_addr_sem;
 /* rtnl helpers */
 extern struct list_head net_todo_list;
 void netdev_run_todo(void);
+
+int netdev_alloc_config(struct net_device *dev);
+void __netdev_free_config(struct netdev_config *cfg);
+void netdev_free_config(struct net_device *dev);
+int netdev_reconfig_start(struct net_device *dev);
+void __netdev_queue_config(struct net_device *dev, int rxq,
+			   struct netdev_queue_config *qcfg, bool pending);
+int netdev_queue_config_revalidate(struct net_device *dev,
+				   struct netlink_ext_ack *extack);
+void netdev_queue_config_update_cnt(struct net_device *dev, unsigned int txq,
+				    unsigned int rxq);
+int netdev_queue_config_validate(struct net_device *dev, int rxq_idx,
+				  struct netdev_queue_config *qcfg,
+				  struct netlink_ext_ack *extack);
 
 /* netdev management, shared between various uAPI entry points */
 struct netdev_name_node {
@@ -321,6 +336,14 @@ static inline enum netdev_napi_threaded napi_get_threaded(struct napi_struct *n)
 		return NETDEV_NAPI_THREADED_ENABLED;
 
 	return NETDEV_NAPI_THREADED_DISABLED;
+}
+
+static inline enum netdev_napi_threaded
+napi_get_threaded_config(struct net_device *dev, struct napi_struct *n)
+{
+	if (n->config)
+		return n->config->threaded;
+	return dev->threaded;
 }
 
 int napi_set_threaded(struct napi_struct *n,
