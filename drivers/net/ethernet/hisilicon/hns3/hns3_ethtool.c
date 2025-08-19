@@ -10,6 +10,9 @@
 #include "hns3_enet.h"
 #include "hns3_ethtool.h"
 
+#define RX_BUF_LEN_2K 2048
+#define RX_BUF_LEN_4K 4096
+
 /* tqp related stats */
 #define HNS3_TQP_STAT(_string, _member)	{			\
 	.stats_string = _string,				\
@@ -684,6 +687,7 @@ static void hns3_get_ringparam(struct net_device *netdev,
 	param->tx_pending = priv->ring[0].desc_num;
 	param->rx_pending = priv->ring[rx_queue_index].desc_num;
 	kernel_param->rx_buf_len = priv->ring[rx_queue_index].buf_size;
+	kernel_param->rx_buf_len_max = RX_BUF_LEN_4K;
 	kernel_param->tx_push = test_bit(HNS3_NIC_STATE_TX_PUSH_ENABLE,
 					 &priv->state);
 }
@@ -1113,9 +1117,6 @@ static int hns3_check_ringparam(struct net_device *ndev,
 				struct ethtool_ringparam *param,
 				struct kernel_ethtool_ringparam *kernel_param)
 {
-#define RX_BUF_LEN_2K 2048
-#define RX_BUF_LEN_4K 4096
-
 	struct hns3_nic_priv *priv = netdev_priv(ndev);
 
 	if (hns3_nic_resetting(ndev) || !priv->ring) {
@@ -1126,6 +1127,9 @@ static int hns3_check_ringparam(struct net_device *ndev,
 
 	if (param->rx_mini_pending || param->rx_jumbo_pending)
 		return -EINVAL;
+
+	if (!kernel_param->rx_buf_len)
+		kernel_param->rx_buf_len = RX_BUF_LEN_2K;
 
 	if (kernel_param->rx_buf_len != RX_BUF_LEN_2K &&
 	    kernel_param->rx_buf_len != RX_BUF_LEN_4K) {
