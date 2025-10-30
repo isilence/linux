@@ -1083,6 +1083,7 @@ struct io_uring_zcrx_ifq_reg {
 
 enum zcrx_ctrl_op {
 	ZCRX_CTRL_EXPORT,
+	ZCRX_CTRL_IMPORT,
 
 	__ZCRX_CTRL_LAST,
 };

@@ -1043,6 +1043,11 @@ static int export_zcrx(struct io_ring_ctx *ctx, struct io_zcrx_ifq *zcrx,
 	struct file *file;
 	int fd = -1;
 
+	if (!(ctx->flags & IORING_SETUP_DEFER_TASKRUN))
+		return -EINVAL;
+	if (!(ctx->flags & (IORING_SETUP_CQE32|IORING_SETUP_CQE_MIXED)))
+		return -EINVAL;
+
 	if (!mem_is_zero(&ctrl->resv, sizeof(ctrl->resv)))
 		return -EINVAL;
 	fd = get_unused_fd_flags(O_CLOEXEC);
@@ -1063,6 +1068,37 @@ static int export_zcrx(struct io_ring_ctx *ctx, struct io_zcrx_ifq *zcrx,
 	return fd;
 }
 
+static int import_zcrx(struct io_ring_ctx *ctx, struct zcrx_ctrl *ctrl)
+{
+	struct io_zcrx_ifq *zcrx;
+	int fd = ctrl->resv[0]; // todo;
+	struct file *file;
+	CLASS(fd, f)(fd);
+	int ret;
+	u32 id;
+
+	if (fd_empty(f))
+		return -EBADF;
+	file = fd_file(f);
+
+	if (file->f_op != &zcrx_box_fops || !file->private_data)
+		return -EBADF;
+
+	zcrx = file->private_data;
+	refcount_inc(&zcrx->refs);
+	refcount_inc(&zcrx->user_refs);
+
+	scoped_guard(mutex, &ctx->mmap_lock) {
+		ret = xa_alloc(&ctx->zcrx_ctxs, &id, zcrx, xa_limit_31b, GFP_KERNEL);
+		if (ret) {
+			zcrx_unregister(zcrx);
+			return ret;
+		}
+	}
+
+	return id;
+}
+
 int io_zcrx_ctrl(struct io_ring_ctx *ctx, void __user *arg, unsigned nr_args)
 {
 	struct zcrx_ctrl ctrl;
@@ -1072,16 +1108,18 @@ int io_zcrx_ctrl(struct io_ring_ctx *ctx, void __user *arg, unsigned nr_args)
 		return -EINVAL;
 	if (copy_from_user(&ctrl, arg, sizeof(ctrl)))
 		return -EFAULT;
-
-	zcrx = xa_load(&ctx->zcrx_ctxs, ctrl.zcrx_id);
-	if (!zcrx)
-		return -ENXIO;
 	if (ctrl.op >= __ZCRX_CTRL_LAST)
 		return -EOPNOTSUPP;
 
+	zcrx = xa_load(&ctx->zcrx_ctxs, ctrl.zcrx_id);
+
 	switch (ctrl.op) {
 	case ZCRX_CTRL_EXPORT:
+		if (!zcrx)
+			return -ENXIO;
 		return export_zcrx(ctx, zcrx, &ctrl);
+	case ZCRX_CTRL_IMPORT:
+		return import_zcrx(ctx, &ctrl);
 	}
 
 	return -EINVAL;
