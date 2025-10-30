@@ -8,6 +8,7 @@
 #include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
 #include <linux/skbuff_ref.h>
+#include <linux/anon_inodes.h>
 
 #include <net/page_pool/helpers.h>
 #include <net/page_pool/memory_provider.h>
@@ -722,6 +723,15 @@ static void io_zcrx_scrub(struct io_zcrx_ifq *ifq)
 	}
 }
 
+static void zcrx_unregister(struct io_zcrx_ifq *zcrx)
+{
+	if (refcount_dec_and_test(&zcrx->user_refs)) {
+		io_close_queue(zcrx);
+		io_zcrx_scrub(zcrx);
+	}
+	io_put_zcrx(zcrx);
+}
+
 void io_unregister_zcrx_ifqs(struct io_ring_ctx *ctx)
 {
 	struct io_zcrx_ifq *ifq;
@@ -738,12 +748,7 @@ void io_unregister_zcrx_ifqs(struct io_ring_ctx *ctx)
 		}
 		if (!ifq)
 			break;
-
-		if (refcount_dec_and_test(&ifq->user_refs)) {
-			io_close_queue(ifq);
-			io_zcrx_scrub(ifq);
-		}
-		io_put_zcrx(ifq);
+		zcrx_unregister(ifq);
 	}
 
 	xa_destroy(&ctx->zcrx_ctxs);
@@ -1019,6 +1024,45 @@ static int io_zcrx_return_bufs(struct io_ring_ctx *ctx,
 	return nr;
 }
 
+static int zcrx_box_release(struct inode *inode, struct file *file)
+{
+	struct io_zcrx_ifq *zcrx = file->private_data;
+
+	zcrx_unregister(zcrx);
+	return 0;
+}
+
+static const struct file_operations zcrx_box_fops = {
+	.owner		= THIS_MODULE,
+	.release	= zcrx_box_release,
+};
+
+static int export_zcrx(struct io_ring_ctx *ctx, struct io_zcrx_ifq *zcrx,
+			struct zcrx_ctrl *ctrl)
+{
+	struct file *file;
+	int fd = -1;
+
+	if (!mem_is_zero(&ctrl->resv, sizeof(ctrl->resv)))
+		return -EINVAL;
+	fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fd < 0)
+		return fd;
+
+	refcount_inc(&zcrx->refs);
+	refcount_inc(&zcrx->user_refs);
+
+	file = anon_inode_create_getfile("[zcrx]", &zcrx_box_fops,
+					 zcrx, O_CLOEXEC, NULL);
+	if (IS_ERR(file)) {
+		zcrx_unregister(zcrx);
+		return PTR_ERR(file);
+	}
+
+	fd_install(fd, file);
+	return fd;
+}
+
 int io_zcrx_ctrl(struct io_ring_ctx *ctx, void __user *arg, unsigned nr_args)
 {
 	struct zcrx_ctrl ctrl;
@@ -1034,6 +1078,11 @@ int io_zcrx_ctrl(struct io_ring_ctx *ctx, void __user *arg, unsigned nr_args)
 		return -ENXIO;
 	if (ctrl.op >= __ZCRX_CTRL_LAST)
 		return -EOPNOTSUPP;
+
+	switch (ctrl.op) {
+	case ZCRX_CTRL_EXPORT:
+		return export_zcrx(ctx, zcrx, &ctrl);
+	}
 
 	return -EINVAL;
 }
