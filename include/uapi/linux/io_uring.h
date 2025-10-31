@@ -1086,6 +1086,8 @@ struct io_uring_zcrx_ifq_reg {
 };
 
 enum zcrx_ctrl_op {
+	ZCRX_CTRL_FLUSH_RQ,
+
 	__ZCRX_CTRL_LAST,
 };
 
