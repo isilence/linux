@@ -2633,6 +2633,7 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 	ktime_t start_time;
 	int ret;
 
+
 	min_events = min_t(int, min_events, ctx->cq_entries);
 
 	if (!io_allowed_run_tw(ctx))
@@ -2644,8 +2645,13 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 
 	if (unlikely(test_bit(IO_CHECK_CQ_OVERFLOW_BIT, &ctx->check_cq)))
 		io_cqring_do_overflow_flush(ctx);
-	if (__io_cqring_events_user(ctx) >= min_events)
+
+	if (io_has_cqwait_ops(ctx)) {
+		if (ext_arg->min_time)
+			return -EINVAL;
+	} else if (__io_cqring_events_user(ctx) >= min_events) {
 		return 0;
+	}
 
 	init_waitqueue_func_entry(&iowq.wqe, io_wake_function);
 	iowq.wqe.private = current;
@@ -2705,6 +2711,13 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 		ret = io_cqring_wait_schedule(ctx, &iowq, ext_arg, start_time);
 		__set_current_state(TASK_RUNNING);
 		atomic_set(&ctx->cq_wait_nr, IO_CQ_WAKE_INIT);
+
+		if (io_has_cqwait_ops(ctx)) {
+			ret = io_run_cqwait_ops(ctx, &iowq.ls);
+			if (ret <= 0)
+				break;
+			continue;
+		}
 
 		/*
 		 * Run task_work after scheduling and before io_should_wake().
