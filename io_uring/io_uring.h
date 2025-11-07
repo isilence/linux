@@ -101,15 +101,23 @@ struct io_defer_entry {
 	struct io_kiocb		*req;
 };
 
+struct iou_loop_state {
+	/*
+	 * The CQE index to wait for. Only serves as a hint and can still be
+	 * woken up earlier.
+	 */
+	__u32		cq_tail;
+	ktime_t		timeout;
+};
+
 struct io_wait_queue {
+	struct iou_loop_state ls;
 	struct wait_queue_entry wqe;
 	struct io_ring_ctx *ctx;
-	unsigned cq_tail;
 	unsigned cq_min_tail;
 	unsigned nr_timeouts;
 	int hit_timeout;
 	ktime_t min_timeout;
-	ktime_t timeout;
 	struct hrtimer t;
 
 #ifdef CONFIG_NET_RX_BUSY_POLL
@@ -121,7 +129,7 @@ struct io_wait_queue {
 static inline bool io_should_wake(struct io_wait_queue *iowq)
 {
 	struct io_ring_ctx *ctx = iowq->ctx;
-	int dist = READ_ONCE(ctx->rings->cq.tail) - (int) iowq->cq_tail;
+	int dist = READ_ONCE(ctx->rings->cq.tail) - (int) iowq->ls.cq_tail;
 
 	/*
 	 * Wake up if we have enough events, or if a timeout occurred since we
