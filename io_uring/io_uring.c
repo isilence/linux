@@ -2453,7 +2453,7 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 static int io_wake_function(struct wait_queue_entry *curr, unsigned int mode,
 			    int wake_flags, void *key)
 {
-	struct io_wait_queue *iowq = container_of(curr, struct io_wait_queue, wq);
+	struct io_wait_queue *iowq = container_of(curr, struct io_wait_queue, wqe);
 
 	/*
 	 * Cannot safely flush overflowed CQEs from here, ensure we wake up
@@ -2493,7 +2493,7 @@ static enum hrtimer_restart io_cqring_timer_wakeup(struct hrtimer *timer)
 
 	WRITE_ONCE(iowq->hit_timeout, 1);
 	iowq->min_timeout = 0;
-	wake_up_process(iowq->wq.private);
+	wake_up_process(iowq->wqe.private);
 	return HRTIMER_NORESTART;
 }
 
@@ -2646,9 +2646,9 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 	if (__io_cqring_events_user(ctx) >= min_events)
 		return 0;
 
-	init_waitqueue_func_entry(&iowq.wq, io_wake_function);
-	iowq.wq.private = current;
-	INIT_LIST_HEAD(&iowq.wq.entry);
+	init_waitqueue_func_entry(&iowq.wqe, io_wake_function);
+	iowq.wqe.private = current;
+	INIT_LIST_HEAD(&iowq.wqe.entry);
 	iowq.ctx = ctx;
 	iowq.cq_tail = READ_ONCE(ctx->rings->cq.head) + min_events;
 	iowq.cq_min_tail = READ_ONCE(ctx->rings->cq.tail);
@@ -2695,7 +2695,7 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 			atomic_set(&ctx->cq_wait_nr, nr_wait);
 			set_current_state(TASK_INTERRUPTIBLE);
 		} else {
-			prepare_to_wait_exclusive(&ctx->cq_wait, &iowq.wq,
+			prepare_to_wait_exclusive(&ctx->cq_wait, &iowq.wqe,
 							TASK_INTERRUPTIBLE);
 		}
 
@@ -2743,7 +2743,7 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 	} while (1);
 
 	if (!(ctx->flags & IORING_SETUP_DEFER_TASKRUN))
-		finish_wait(&ctx->cq_wait, &iowq.wq);
+		finish_wait(&ctx->cq_wait, &iowq.wqe);
 	restore_saved_sigmask_unless(ret == -EINTR);
 
 	return READ_ONCE(rings->cq.head) == READ_ONCE(rings->cq.tail) ? ret : 0;

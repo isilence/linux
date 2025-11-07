@@ -102,7 +102,7 @@ struct io_defer_entry {
 };
 
 struct io_wait_queue {
-	struct wait_queue_entry wq;
+	struct wait_queue_entry wqe;
 	struct io_ring_ctx *ctx;
 	unsigned cq_tail;
 	unsigned cq_min_tail;
