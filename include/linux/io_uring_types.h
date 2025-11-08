@@ -274,6 +274,8 @@ struct io_ring_ctx {
 		unsigned int		compat: 1;
 		unsigned int		iowq_limits_set : 1;
 
+		unsigned int		bpf_installed: 1;
+
 		struct task_struct	*submitter_task;
 		struct io_rings		*rings;
 		struct percpu_ref	refs;
