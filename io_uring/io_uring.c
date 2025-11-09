@@ -1350,8 +1350,8 @@ static int __io_run_local_work_loop(struct llist_node **node,
 	return ret;
 }
 
-static int __io_run_local_work(struct io_ring_ctx *ctx, io_tw_token_t tw,
-			       int min_events, int max_events)
+int __io_run_local_work(struct io_ring_ctx *ctx, io_tw_token_t tw,
+			int min_events, int max_events)
 {
 	struct llist_node *node;
 	unsigned int loops = 0;
