@@ -2607,11 +2607,11 @@ static inline int io_cqring_wait_schedule(struct io_ring_ctx *ctx,
 					  ktime_t start_time)
 {
 	if (unlikely(READ_ONCE(ctx->check_cq)))
-		return 1;
+		return 0;
 	if (unlikely(io_local_work_pending(ctx)))
-		return 1;
+		return 0;
 	if (unlikely(task_work_pending(current)))
-		return 1;
+		return 0;
 	if (unlikely(task_sigpending(current)))
 		return -EINTR;
 	if (unlikely(io_should_wake(iowq)))
