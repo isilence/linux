@@ -1096,10 +1096,25 @@ enum zcrx_ctrl_op {
 	__ZCRX_CTRL_LAST,
 };
 
+struct zcrx_ctrl_flush_rq {
+	__u64	__resv[6];
+};
+
+struct zcrx_ctrl_export {
+	__u32	zcrx_fd;
+	__u32	__resv1;
+	__u64	__resv2[5];
+};
+
 struct zcrx_ctrl {
 	__u32	zcrx_id;
 	__u32	op; /* see enum zcrx_ctrl_op */
-	__u64	resv[8];
+	__u64	__resv[2];
+
+	union {
+		struct zcrx_ctrl_flush_rq zc_flush;
+		struct zcrx_ctrl_export zc_export;
+	};
 };
 
 #ifdef __cplusplus

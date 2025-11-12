@@ -625,16 +625,23 @@ static const struct file_operations zcrx_box_fops = {
 };
 
 static int export_zcrx(struct io_ring_ctx *ctx, struct io_zcrx_ifq *ifq,
-		       struct zcrx_ctrl *ctrl)
+		       struct zcrx_ctrl *ctrl, void __user *arg)
 {
+	struct zcrx_ctrl_export *ce = &ctrl->zc_export;
 	struct file *file;
 	int fd = -1;
 
-	if (!mem_is_zero(&ctrl->resv, sizeof(ctrl->resv)))
+	if (!mem_is_zero(ce, sizeof(*ce)))
 		return -EINVAL;
 	fd = get_unused_fd_flags(O_CLOEXEC);
 	if (fd < 0)
 		return fd;
+
+	ce->zcrx_fd = fd;
+	if (copy_to_user(arg, &ctrl, sizeof(ctrl))) {
+		put_unused_fd(fd);
+		return -EFAULT;
+	}
 
 	refcount_inc(&ifq->refs);
 	refcount_inc(&ifq->user_refs);
@@ -648,7 +655,7 @@ static int export_zcrx(struct io_ring_ctx *ctx, struct io_zcrx_ifq *ifq,
 	}
 
 	fd_install(fd, file);
-	return fd;
+	return 0;
 }
 
 static int import_zcrx(struct io_ring_ctx *ctx,
@@ -1096,11 +1103,12 @@ static void zcrx_return_buffers(netmem_ref *netmems, unsigned nr)
 static int zcrx_flush_rq(struct io_ring_ctx *ctx, struct io_zcrx_ifq *zcrx,
 			 struct zcrx_ctrl *ctrl)
 {
+	struct zcrx_ctrl_flush_rq *rq = &ctrl->zc_flush;
 	netmem_ref netmems[ZCRX_FLUSH_BATCH];
 	unsigned total = 0;
 	unsigned nr;
 
-	if (!mem_is_zero(&ctrl->resv, sizeof(ctrl->resv)))
+	if (!mem_is_zero(&rq->__resv, sizeof(rq->__resv)))
 		return -EINVAL;
 
 	do {
@@ -1126,6 +1134,8 @@ int io_zcrx_ctrl(struct io_ring_ctx *ctx, void __user *arg, unsigned nr_args)
 		return -EINVAL;
 	if (copy_from_user(&ctrl, arg, sizeof(ctrl)))
 		return -EFAULT;
+	if (!mem_is_zero(&ctrl.__resv, sizeof(ctrl.__resv)))
+		return -EINVAL;
 
 	zcrx = xa_load(&ctx->zcrx_ctxs, ctrl.zcrx_id);
 	if (!zcrx)
@@ -1135,7 +1145,7 @@ int io_zcrx_ctrl(struct io_ring_ctx *ctx, void __user *arg, unsigned nr_args)
 	case ZCRX_CTRL_FLUSH_RQ:
 		return zcrx_flush_rq(ctx, zcrx, &ctrl);
 	case ZCRX_CTRL_EXPORT:
-		return export_zcrx(ctx, zcrx, &ctrl);
+		return export_zcrx(ctx, zcrx, &ctrl, arg);
 	}
 
 	return -EOPNOTSUPP;
