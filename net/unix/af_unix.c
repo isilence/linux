@@ -733,19 +733,7 @@ static void unix_release_sock(struct sock *sk, int embrion)
 
 	/* ---- Socket is dead now and most probably destroyed ---- */
 
-	/*
-	 * Fixme: BSD difference: In BSD all sockets connected to us get
-	 *	  ECONNRESET and we die on the spot. In Linux we behave
-	 *	  like files and pipes do and wait for the last
-	 *	  dereference.
-	 *
-	 * Can't we simply set sock->err?
-	 *
-	 *	  What the above comment does talk about? --ANK(980817)
-	 */
-
-	if (READ_ONCE(unix_tot_inflight))
-		unix_gc();		/* Garbage collect fds */
+	unix_schedule_gc(NULL);
 }
 
 struct unix_peercred {
@@ -854,8 +842,8 @@ out:
 }
 
 static int unix_release(struct socket *);
-static int unix_bind(struct socket *, struct sockaddr *, int);
-static int unix_stream_connect(struct socket *, struct sockaddr *,
+static int unix_bind(struct socket *, struct sockaddr_unsized *, int);
+static int unix_stream_connect(struct socket *, struct sockaddr_unsized *,
 			       int addr_len, int flags);
 static int unix_socketpair(struct socket *, struct socket *);
 static int unix_accept(struct socket *, struct socket *, struct proto_accept_arg *arg);
@@ -877,7 +865,7 @@ static int unix_dgram_sendmsg(struct socket *, struct msghdr *, size_t);
 static int unix_dgram_recvmsg(struct socket *, struct msghdr *, size_t, int);
 static int unix_read_skb(struct sock *sk, skb_read_actor_t recv_actor);
 static int unix_stream_read_skb(struct sock *sk, skb_read_actor_t recv_actor);
-static int unix_dgram_connect(struct socket *, struct sockaddr *,
+static int unix_dgram_connect(struct socket *, struct sockaddr_unsized *,
 			      int, int);
 static int unix_seqpacket_sendmsg(struct socket *, struct msghdr *, size_t);
 static int unix_seqpacket_recvmsg(struct socket *, struct msghdr *, size_t,
@@ -1477,7 +1465,7 @@ out:
 	return err;
 }
 
-static int unix_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
+static int unix_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len)
 {
 	struct sockaddr_un *sunaddr = (struct sockaddr_un *)uaddr;
 	struct sock *sk = sock->sk;
@@ -1523,7 +1511,7 @@ static void unix_state_double_unlock(struct sock *sk1, struct sock *sk2)
 	unix_state_unlock(sk2);
 }
 
-static int unix_dgram_connect(struct socket *sock, struct sockaddr *addr,
+static int unix_dgram_connect(struct socket *sock, struct sockaddr_unsized *addr,
 			      int alen, int flags)
 {
 	struct sockaddr_un *sunaddr = (struct sockaddr_un *)addr;
@@ -1642,7 +1630,7 @@ static long unix_wait_for_peer(struct sock *other, long timeo)
 	return timeo;
 }
 
-static int unix_stream_connect(struct socket *sock, struct sockaddr *uaddr,
+static int unix_stream_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 			       int addr_len, int flags)
 {
 	struct sockaddr_un *sunaddr = (struct sockaddr_un *)uaddr;
@@ -2110,8 +2098,6 @@ static int unix_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
 	if (err < 0)
 		return err;
 
-	wait_for_unix_gc(scm.fp);
-
 	if (msg->msg_flags & MSG_OOB) {
 		err = -EOPNOTSUPP;
 		goto out;
@@ -2404,8 +2390,6 @@ static int unix_stream_sendmsg(struct socket *sock, struct msghdr *msg,
 	err = scm_send(sock, msg, &scm, false);
 	if (err < 0)
 		return err;
-
-	wait_for_unix_gc(scm.fp);
 
 	if (msg->msg_flags & MSG_OOB) {
 		err = -EOPNOTSUPP;
@@ -2954,6 +2938,7 @@ static int unix_stream_read_generic(struct unix_stream_read_state *state,
 
 	u = unix_sk(sk);
 
+redo:
 	/* Lock the socket to prevent queue disordering
 	 * while sleeps in memcpy_tomsg
 	 */
@@ -2965,7 +2950,6 @@ static int unix_stream_read_generic(struct unix_stream_read_state *state,
 		struct sk_buff *skb, *last;
 		int chunk;
 
-redo:
 		unix_state_lock(sk);
 		if (sock_flag(sk, SOCK_DEAD)) {
 			err = -ECONNRESET;
@@ -3015,7 +2999,6 @@ again:
 				goto out;
 			}
 
-			mutex_lock(&u->iolock);
 			goto redo;
 unlock:
 			unix_state_unlock(sk);
