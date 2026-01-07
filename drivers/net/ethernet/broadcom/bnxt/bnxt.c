@@ -16693,17 +16693,6 @@ void bnxt_print_device_info(struct bnxt *bp)
 	pcie_print_link_status(bp->pdev);
 }
 
-static void bnxt_init_rx_queue_cfg(struct net_device *dev)
-{
-	struct netdev_rx_queue *rxq;
-	int i;
-
-	for (i = 0; i < dev->num_rx_queues; i++) {
-		rxq = __netif_get_rx_queue(dev, i);
-		bnxt_queue_default_qcfg(dev, &rxq->qcfg);
-	}
-}
-
 static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct bnxt_hw_resc *hw_resc;
@@ -16732,8 +16721,6 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 				 max_irqs);
 	if (!dev)
 		return -ENOMEM;
-
-	bnxt_init_rx_queue_cfg(dev);
 
 	bp = netdev_priv(dev);
 	bp->board_idx = ent->driver_data;
