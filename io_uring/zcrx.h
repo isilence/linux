@@ -47,6 +47,7 @@ struct zcrx_rq {
 	struct io_uring_zcrx_rqe	*rqes;
 	u32				cached_head;
 	u32				nr_entries;
+	unsigned			refill_cap;
 };
 
 struct io_zcrx_ifq {
