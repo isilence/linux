@@ -990,9 +990,12 @@ void io_unregister_zcrx(struct io_ring_ctx *ctx)
 
 static inline u32 zcrx_rq_entries(struct zcrx_rq *rq)
 {
-	u32 entries;
+	u32 entries = rq->cached_tail - rq->cached_head;
 
-	entries = smp_load_acquire(&rq->ring->tail) - rq->cached_head;
+	if (entries < ZCRX_REFILL_CAP) {
+		rq->cached_tail = smp_load_acquire(&rq->ring->tail);
+		entries = rq->cached_tail - rq->cached_head;
+	}
 	return min(entries, rq->nr_entries);
 }
 
