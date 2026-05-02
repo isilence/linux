@@ -36,6 +36,7 @@
 #define ZCRX_REFILL_CAP MIN(64 * ZCRX_MAX_FRAGS_PER_PAGE, 1024)
 
 #define IO_ZCRX_AREA_SUPPORTED_FLAGS	(IORING_ZCRX_AREA_DMABUF)
+#define ZCRX_MAX_AREAS			1024
 
 #define IO_DMA_ATTR (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
 
@@ -46,7 +47,7 @@ static inline u64 zcrx_area_id_to_token(u32 area_id)
 
 static inline u32 zcrx_next_area_id(struct io_zcrx_ifq *zcrx)
 {
-	return zcrx->nr_areas;
+	return READ_ONCE(zcrx->nr_areas);
 }
 
 static inline struct io_zcrx_ifq *io_pp_to_ifq(struct page_pool *pp)
@@ -295,8 +296,6 @@ static int io_import_area(struct io_zcrx_ifq *ifq,
 
 	if (area_reg->flags & ~IO_ZCRX_AREA_SUPPORTED_FLAGS)
 		return -EINVAL;
-	if (area_reg->rq_area_token)
-		return -EINVAL;
 	if (area_reg->__resv2[0] || area_reg->__resv2[1])
 		return -EINVAL;
 
@@ -311,15 +310,11 @@ static int io_import_area(struct io_zcrx_ifq *ifq,
 	return io_import_umem(ifq, mem, area_reg);
 }
 
-static void io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
-				struct io_zcrx_area *area)
+static void __io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
+				 struct io_zcrx_area *area)
 {
 	int i;
 
-	if (!area)
-		return;
-
-	guard(mutex)(&ifq->pp_lock);
 	if (!area->is_mapped)
 		return;
 	area->is_mapped = false;
@@ -335,6 +330,15 @@ static void io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
 		dma_unmap_sgtable(ifq->dev, &area->mem.page_sg_table,
 				  DMA_FROM_DEVICE, IO_DMA_ATTR);
 	}
+}
+
+static void io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
+				struct io_zcrx_area *area)
+{
+	if (!area)
+		return;
+	guard(mutex)(&ifq->pp_lock);
+	__io_zcrx_unmap_area(ifq, area);
 }
 
 static void io_zcrx_unmap_areas(struct io_zcrx_ifq *ifq)
@@ -475,7 +479,9 @@ static int io_zcrx_append_area(struct io_zcrx_ifq *ifq,
 	struct io_zcrx_area **areas, **old_areas;
 	unsigned old_nr;
 
-	if (WARN_ON_ONCE(ifq->kern_readable != kern_readable))
+	if (ifq->kern_readable != kern_readable)
+		return -EINVAL;
+	if (ifq->nr_areas + 1 > ZCRX_MAX_AREAS)
 		return -EINVAL;
 	if (WARN_ON_ONCE(area->area_id != zcrx_next_area_id(ifq)))
 		return -EINVAL;
@@ -516,7 +522,7 @@ static int __zcrx_create_area(struct io_zcrx_ifq *ifq,
 			return -EINVAL;
 		buf_size_shift = ilog2(rx_buf_len);
 	}
-	if (WARN_ON_ONCE(ifq->niov_shift))
+	if (ifq->niov_shift && ifq->niov_shift != buf_size_shift)
 		return -EINVAL;
 	if (!ifq->dev && buf_size_shift != PAGE_SHIFT)
 		return -EOPNOTSUPP;
@@ -578,7 +584,7 @@ static int __zcrx_create_area(struct io_zcrx_ifq *ifq,
 	return 0;
 err:
 	if (area) {
-		io_zcrx_unmap_area(ifq, area);
+		__io_zcrx_unmap_area(ifq, area);
 		io_zcrx_free_area(ifq, area);
 	}
 	return ret;
@@ -1012,6 +1018,8 @@ int io_register_zcrx(struct io_ring_ctx *ctx,
 
 	if (copy_from_user(&area, u64_to_user_ptr(reg.area_ptr), sizeof(area)))
 		return -EFAULT;
+	if (area.rq_area_token)
+		return -EINVAL;
 
 	memset(&notif, 0, sizeof(notif));
 	if (reg.notif_desc && copy_from_user(&notif, u64_to_user_ptr(reg.notif_desc),
@@ -1073,6 +1081,8 @@ int io_register_zcrx(struct io_ring_ctx *ctx,
 		if (ret)
 			goto err;
 	}
+
+	WARN_ON_ONCE(!ifq->niov_shift);
 
 	reg.zcrx_id = id;
 
@@ -1559,6 +1569,54 @@ static int zcrx_arm_notif(struct io_ring_ctx *ctx, struct io_zcrx_ifq *zcrx,
 	return 0;
 }
 
+static int zcrx_ctrl_add_area(struct io_ring_ctx *ctx, struct io_zcrx_ifq *ifq,
+			      struct zcrx_ctrl *ctrl)
+{
+	struct zcrx_ctrl_add_area *ctrl_add = &ctrl->zc_area;
+	struct io_uring_zcrx_area_reg __user *area_uptr;
+	struct io_uring_zcrx_area_reg area_reg;
+	struct io_zcrx_area *area = NULL;
+	int ret;
+
+	area_uptr = u64_to_user_ptr(ctrl_add->area_ptr);
+	if (copy_from_user(&area_reg, area_uptr, sizeof(area_reg)))
+		return -EFAULT;
+	if (!mem_is_zero(&ctrl_add->__resv, sizeof(ctrl_add->__resv)))
+		return -EINVAL;
+	if (area_reg.rq_area_token)
+		return -EINVAL;
+
+	while (true) {
+		u32 area_id = zcrx_next_area_id(ifq);
+
+		/*
+		 * It's hard to roll back append and page faults under
+		 * ->pp_lock is a bad idea. Grab and post an unstable area id
+		 * first, and then check-retry under the lock.
+		 */
+		area_reg.rq_area_token = zcrx_area_id_to_token(area_id);
+		if (copy_to_user(area_uptr, &area_reg, sizeof(area_reg)))
+			return -EFAULT;
+
+		guard(mutex)(&ifq->pp_lock);
+		if (area_id != zcrx_next_area_id(ifq))
+			continue;
+
+		ret = __zcrx_create_area(ifq, &area_reg, &area,
+					 1U << ifq->niov_shift, area_id);
+		if (ret)
+			break;
+
+		ret = io_zcrx_append_area(ifq, area);
+		if (ret)
+			__io_zcrx_unmap_area(ifq, area);
+		break;
+	}
+	if (ret && area)
+		io_zcrx_free_area(ifq, area);
+	return ret;
+}
+
 int io_zcrx_ctrl(struct io_ring_ctx *ctx, void __user *arg, unsigned nr_args)
 {
 	struct zcrx_ctrl ctrl;
@@ -1585,6 +1643,8 @@ int io_zcrx_ctrl(struct io_ring_ctx *ctx, void __user *arg, unsigned nr_args)
 		return zcrx_export(ctx, zcrx, &ctrl, arg);
 	case ZCRX_CTRL_ARM_NOTIFICATION:
 		return zcrx_arm_notif(ctx, zcrx, &ctrl);
+	case ZCRX_CTRL_ADD_AREA:
+		return zcrx_ctrl_add_area(ctx, zcrx, &ctrl);
 	}
 
 	return -EOPNOTSUPP;
