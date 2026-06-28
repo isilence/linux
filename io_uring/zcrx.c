@@ -1877,23 +1877,29 @@ static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 		const skb_frag_t *frag = &shi->frags[i];
 		unsigned frag_end = start + skb_frag_size(frag);
 
+		if (offset < frag_end)
+			break;
+		start = frag_end;
+	}
+
+	for (; i < shi->nr_frags; i++) {
+		const skb_frag_t *frag = &shi->frags[i];
+		unsigned frag_end = start + skb_frag_size(frag);
+		unsigned copy = min(frag_end - offset, len);
+		unsigned frag_off = offset - start;
+
 		if (WARN_ON(start > offset + len))
 			return -EFAULT;
-
-		if (offset < frag_end) {
-			unsigned copy = min(frag_end - offset, len);
-			unsigned frag_off = offset - start;
-
-			ret = io_zcrx_recv_frag(req, ifq, frag, frag_off, copy);
-			if (ret < 0)
-				goto out;
-
-			offset += ret;
-			len -= ret;
-			if (len == 0 || ret != copy)
-				goto out;
-		}
 		start = frag_end;
+
+		ret = io_zcrx_recv_frag(req, ifq, frag, frag_off, copy);
+		if (ret < 0)
+			goto out;
+
+		offset += ret;
+		len -= ret;
+		if (len == 0 || ret != copy)
+			goto out;
 	}
 
 	skb_walk_frags(skb, frag_iter) {
