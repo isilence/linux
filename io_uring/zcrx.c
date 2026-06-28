@@ -1800,30 +1800,16 @@ static int io_zcrx_copy_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 	return ret;
 }
 
-static int io_zcrx_recv_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
-			     const skb_frag_t *frag, int off, int len)
+static int zcrx_recv_niov(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
+				struct net_iov *niov, int off, int len)
 {
-	struct net_iov *niov;
-	struct page_pool *pp;
-
-	if (unlikely(!skb_frag_is_net_iov(frag)))
-		return io_zcrx_copy_frag(req, ifq, frag, off, len);
-
-	niov = netmem_to_net_iov(frag->netmem);
-	pp = niov->desc.pp;
+	struct page_pool *pp = niov->desc.pp;
 
 	if (!pp || pp->mp_ops != &io_uring_pp_zc_ops || io_pp_to_ifq(pp) != ifq)
 		return -EFAULT;
 
-	if (!io_zcrx_queue_cqe(req, niov, ifq, off + skb_frag_off(frag), len))
+	if (!io_zcrx_queue_cqe(req, niov, ifq, off, len))
 		return -ENOSPC;
-
-	/*
-	 * Prevent it from being recycled while user is accessing it.
-	 * It has to be done before grabbing a user reference.
-	 */
-	page_pool_ref_netmem(net_iov_to_netmem(niov));
-	io_zcrx_get_niov_uref(niov);
 	return len;
 }
 
@@ -1892,9 +1878,25 @@ static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 			return -EFAULT;
 		start = frag_end;
 
-		ret = io_zcrx_recv_frag(req, ifq, frag, frag_off, copy);
-		if (ret < 0)
-			goto out;
+		if (unlikely(!skb_frag_is_net_iov(frag))) {
+			ret = io_zcrx_copy_frag(req, ifq, frag, frag_off, copy);
+			if (ret < 0)
+				goto out;
+		} else {
+			struct net_iov *niov = netmem_to_net_iov(frag->netmem);
+
+			ret = zcrx_recv_niov(req, ifq, niov,
+					     frag_off + skb_frag_off(frag),
+					     copy);
+			if (ret < 0)
+				goto out;
+			/*
+			 * Prevent it from being recycled while user is accessing it.
+			 * It has to be done before grabbing a user reference.
+			 */
+			page_pool_ref_netmem(net_iov_to_netmem(niov));
+			io_zcrx_get_niov_uref(niov);
+		}
 
 		offset += ret;
 		len -= ret;
