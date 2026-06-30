@@ -3089,6 +3089,19 @@ static inline int tcp_recv_should_stop(struct sock *sk)
 	       signal_pending(current);
 }
 
+static inline bool tcp_read_sock_steal_skb(read_descriptor_t *desc,
+					   struct sk_buff *skb,
+					   struct sock *sk)
+{
+	if (skb_shared(skb))
+		return false;
+
+	desc->stolen = true;
+	__skb_unlink(skb, &sk->sk_receive_queue);
+	skb_orphan(skb);
+	return true;
+}
+
 INDIRECT_CALLABLE_DECLARE(union tcp_seq_and_ts_off
 			  tcp_v4_init_seq_and_ts_off(const struct net *net,
 						     const struct sk_buff *skb));

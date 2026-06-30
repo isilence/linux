@@ -1677,6 +1677,7 @@ static int __tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 		return -ENOTCONN;
 	while ((skb = tcp_recv_skb(sk, seq, &offset)) != NULL) {
 		if (offset < skb->len) {
+			u8 tcp_flags = TCP_SKB_CB(skb)->tcp_flags;
 			int used;
 			size_t len;
 
@@ -1689,6 +1690,7 @@ static int __tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 				if (!len)
 					break;
 			}
+			desc->stolen = false;
 			used = recv_actor(desc, skb, offset, len);
 			if (used <= 0) {
 				if (!copied)
@@ -1700,6 +1702,14 @@ static int __tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 			seq += used;
 			copied += used;
 			offset += used;
+
+			if (desc->stolen) {
+				if (tcp_flags & TCPHDR_FIN) {
+					++seq;
+					break;
+				}
+				goto next;
+			}
 
 			/* If recv_actor drops the lock (e.g. TCP splice
 			 * receive) the skb pointer might be invalid when
@@ -1721,6 +1731,7 @@ static int __tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 			break;
 		}
 		tcp_eat_recv_skb(sk, skb);
+next:
 		if (!desc->count)
 			break;
 		WRITE_ONCE(*copied_seq, seq);

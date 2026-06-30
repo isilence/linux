@@ -165,6 +165,7 @@ typedef struct {
 		void *data;
 	} arg;
 	int error;
+	bool stolen;
 } read_descriptor_t;
 
 struct vm_area_struct;
