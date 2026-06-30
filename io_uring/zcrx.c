@@ -1317,11 +1317,22 @@ static void zcrx_release_skbs(struct io_zcrx_ifq *ifq)
 {
 	while (1) {
 		struct sk_buff *skb = __ptr_ring_consume(&ifq->skb_ring);
+		struct skb_shared_info *shi;
+		unsigned i;
 
 		if (!skb)
 			break;
 
-		zcrx_user_ref_frags(ifq, skb, 0, -1U);
+		shi = skb_shinfo(skb);
+		for (i = 0; i < shi->nr_frags; i++) {
+			const skb_frag_t *frag = &shi->frags[i];
+			struct net_iov *niov = netmem_to_net_iov(frag->netmem);
+
+			/* Take niov references the skb holds */
+			io_zcrx_get_niov_uref(niov);
+		}
+		shi->nr_frags = 0;
+
 		if (skb->fclone != SKB_FCLONE_UNAVAILABLE)
 			__kfree_skb(skb);
 		else
