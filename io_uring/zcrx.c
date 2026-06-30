@@ -1827,9 +1827,8 @@ static int io_zcrx_recv_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 	return len;
 }
 
-static int
-io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
-		 unsigned int offset, size_t len)
+static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
+			   unsigned int offset, size_t len)
 {
 	struct io_zcrx_args *args = desc->arg.data;
 	struct io_zcrx_ifq *ifq = args->ifq;
@@ -1907,11 +1906,8 @@ io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 		if (offset < frag_end) {
 			unsigned copy = min(frag_end - offset, len);
 			unsigned frag_off = offset - start;
-			size_t count;
 
-			count = desc->count;
-			ret = io_zcrx_recv_skb(desc, frag_iter, frag_off, copy);
-			desc->count = count;
+			ret = __zcrx_recv_skb(desc, frag_iter, frag_off, copy);
 			if (ret < 0)
 				goto out;
 
@@ -1926,8 +1922,18 @@ io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 out:
 	if (offset == start_off)
 		return ret;
-	desc->count -= (offset - start_off);
 	return offset - start_off;
+}
+
+static
+int io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
+			unsigned int offset, size_t len)
+{
+	int ret;
+
+	ret = __zcrx_recv_skb(desc, skb, offset, len);
+	desc->count -= max(0, ret);
+	return ret;
 }
 
 static int io_zcrx_tcp_recvmsg(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
