@@ -5,6 +5,7 @@
 #include <linux/io_uring_types.h>
 #include <linux/dma-buf.h>
 #include <linux/socket.h>
+#include <linux/ptr_ring.h>
 #include <net/page_pool/types.h>
 #include <net/net_trackers.h>
 
@@ -68,6 +69,8 @@ struct io_zcrx_ifq {
 
 	struct zcrx_rq			rq ____cacheline_aligned_in_smp;
 	spinlock_t			alloc_lock ____cacheline_aligned_in_smp;
+
+	struct ptr_ring			skb_ring;
 
 	u32				if_rxq;
 	struct device			*dev;

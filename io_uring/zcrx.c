@@ -40,6 +40,8 @@
 
 #define IO_DMA_ATTR (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
 
+static void zcrx_release_skbs(struct io_zcrx_ifq *ifq);
+
 static inline u64 zcrx_area_id_to_token(u32 area_id)
 {
 	return (u64)area_id << IORING_ZCRX_AREA_SHIFT;
@@ -677,6 +679,9 @@ static void io_zcrx_ifq_free(struct io_zcrx_ifq *ifq)
 		return;
 	if (WARN_ON_ONCE(ifq->master_ctx))
 		return;
+	if (WARN_ON_ONCE(!__ptr_ring_empty(&ifq->skb_ring)))
+		return;
+
 
 	for (i = 0; i < ifq->nr_areas; i++)
 		io_zcrx_free_area(ifq, ifq->areas[i]);
@@ -685,6 +690,7 @@ static void io_zcrx_ifq_free(struct io_zcrx_ifq *ifq)
 	if (ifq->dev)
 		put_device(ifq->dev);
 
+	ptr_ring_cleanup(&ifq->skb_ring, NULL);
 	io_free_rbuf_ring(ifq);
 	free_uid(ifq->user);
 	mutex_destroy(&ifq->pp_lock);
@@ -754,6 +760,9 @@ static void io_zcrx_scrub_area(struct io_zcrx_ifq *ifq, struct io_zcrx_area *are
 static void io_zcrx_scrub(struct io_zcrx_ifq *ifq)
 {
 	int i;
+
+	scoped_guard(spinlock_bh, &ifq->rq.lock)
+		zcrx_release_skbs(ifq);
 
 	guard(mutex)(&ifq->pp_lock);
 	for (i = 0; i < ifq->nr_areas; i++)
@@ -1039,6 +1048,9 @@ int io_register_zcrx(struct io_ring_ctx *ctx,
 	ifq = io_zcrx_ifq_alloc(ctx);
 	if (!ifq)
 		return -ENOMEM;
+	ret = ptr_ring_init(&ifq->skb_ring, 1024, GFP_KERNEL_ACCOUNT);
+	if (ret < 0)
+		goto ifq_free;
 
 	ifq->notif_data = notif.user_data;
 	ifq->allowed_notif_mask = notif.type_mask;
@@ -1188,9 +1200,10 @@ static inline u32 __zcrx_rq_entries(struct zcrx_rq *rq)
 	return min(entries, rq->nr_entries);
 }
 
-static inline u32 zcrx_rq_entries(struct zcrx_rq *rq)
+static inline u32 zcrx_rq_entries(struct zcrx_rq *rq, struct io_zcrx_ifq *ifq)
 {
 	rq->cached_tail = smp_load_acquire(&rq->ring->tail);
+	zcrx_release_skbs(ifq);
 	return __zcrx_rq_entries(rq);
 }
 
@@ -1209,6 +1222,7 @@ static inline void zcrx_rq_iter_init(struct zcrx_rq_iter *it,
 }
 
 static inline bool zcrx_rq_iter_next(struct zcrx_rq_iter *it,
+				     struct io_zcrx_ifq *ifq,
 				     struct zcrx_rq *rq,
 				     struct io_uring_zcrx_rqe **rqe)
 {
@@ -1217,6 +1231,14 @@ static inline bool zcrx_rq_iter_next(struct zcrx_rq_iter *it,
 		if (it->flushed)
 			return false;
 		rq->cached_tail = smp_load_acquire(&rq->ring->tail);
+
+		/*
+		 * skbs carry user niov references from the syscall path,
+		 * process them first before refilling will try to put
+		 * them back down.
+		 */
+		zcrx_release_skbs(ifq);
+
 		it->rqes_left = min_t(unsigned, __zcrx_rq_entries(rq),
 				      ZCRX_REFILL_CAP);
 		it->flushed = true;
@@ -1270,6 +1292,42 @@ static bool zcrx_put_refill_niov(struct net_iov *niov, struct page_pool *pp,
 	return true;
 }
 
+static void zcrx_user_ref_frags(struct io_zcrx_ifq *ifq, struct sk_buff *skb,
+				unsigned start, unsigned nr)
+{
+	struct skb_shared_info *shi = skb_shinfo(skb);
+	unsigned i;
+
+	nr = min_t(unsigned, nr, shi->nr_frags);
+	for (i = start; i < nr; i++) {
+		const skb_frag_t *frag = &shi->frags[i];
+		struct net_iov *niov = netmem_to_net_iov(frag->netmem);
+
+		/*
+		 * Prevent it from being recycled while user is accessing it.
+		 * It has to be done before grabbing a user reference.
+		 */
+		page_pool_ref_netmem(net_iov_to_netmem(niov));
+		io_zcrx_get_niov_uref(niov);
+	}
+}
+
+static void zcrx_release_skbs(struct io_zcrx_ifq *ifq)
+{
+	while (1) {
+		struct sk_buff *skb = __ptr_ring_consume(&ifq->skb_ring);
+
+		if (!skb)
+			break;
+
+		zcrx_user_ref_frags(ifq, skb, 0, -1U);
+		if (skb->fclone != SKB_FCLONE_UNAVAILABLE)
+			__kfree_skb(skb);
+		else
+			__napi_kfree_skb(skb, SKB_CONSUMED);
+	}
+}
+
 static unsigned io_zcrx_ring_refill(struct page_pool *pp,
 				    struct io_zcrx_ifq *ifq,
 				    netmem_ref *netmems, unsigned to_alloc)
@@ -1285,7 +1343,7 @@ static unsigned io_zcrx_ring_refill(struct page_pool *pp,
 
 	zcrx_rq_iter_init(&it, rq);
 
-	while (allocated < to_alloc - 1 && zcrx_rq_iter_next(&it, rq, &rqe)) {
+	while (allocated < to_alloc - 1 && zcrx_rq_iter_next(&it, ifq, rq, &rqe)) {
 		struct net_iov *next_niov;
 
 		if (!io_parse_rqe(rqe, ifq, &next_niov))
@@ -1489,7 +1547,7 @@ static unsigned zcrx_parse_rq(netmem_ref *netmem_array, unsigned nr,
 	unsigned int mask = rq->nr_entries - 1;
 	unsigned int i;
 
-	nr = min(nr, zcrx_rq_entries(rq));
+	nr = min(nr, zcrx_rq_entries(rq, zcrx));
 	for (i = 0; i < nr; i++) {
 		struct io_uring_zcrx_rqe *rqe = zcrx_next_rqe(rq, mask);
 		struct net_iov *niov;
@@ -1814,7 +1872,7 @@ static int zcrx_recv_niov(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 }
 
 static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
-			   unsigned int offset, size_t len)
+			   unsigned int offset, size_t len, bool frag_skb)
 {
 	struct io_zcrx_args *args = desc->arg.data;
 	struct io_zcrx_ifq *ifq = args->ifq;
@@ -1822,6 +1880,8 @@ static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 	struct sk_buff *frag_iter;
 	unsigned start, start_off = offset;
 	struct skb_shared_info *shi;
+	unsigned first_frag;
+	bool can_steal;
 	int i, ret = 0;
 
 	len = min_t(size_t, len, desc->count);
@@ -1868,6 +1928,8 @@ static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 		start = frag_end;
 	}
 
+	first_frag = i;
+
 	for (; i < shi->nr_frags; i++) {
 		const skb_frag_t *frag = &shi->frags[i];
 		unsigned frag_end = start + skb_frag_size(frag);
@@ -1881,7 +1943,7 @@ static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 		if (unlikely(!skb_frag_is_net_iov(frag))) {
 			ret = io_zcrx_copy_frag(req, ifq, frag, frag_off, copy);
 			if (ret < 0)
-				goto out;
+				break;
 		} else {
 			struct net_iov *niov = netmem_to_net_iov(frag->netmem);
 
@@ -1889,20 +1951,38 @@ static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 					     frag_off + skb_frag_off(frag),
 					     copy);
 			if (ret < 0)
-				goto out;
-			/*
-			 * Prevent it from being recycled while user is accessing it.
-			 * It has to be done before grabbing a user reference.
-			 */
-			page_pool_ref_netmem(net_iov_to_netmem(niov));
-			io_zcrx_get_niov_uref(niov);
+				break;
 		}
 
 		offset += ret;
 		len -= ret;
-		if (len == 0 || ret != copy)
-			goto out;
+		if (len == 0 || ret != copy) {
+			i++;
+			len = 0;
+			break;
+		}
 	}
+
+	if (start != offset || ret < 0) {
+		if (!skb_frags_readable(skb))
+			zcrx_user_ref_frags(ifq, skb, first_frag, i);
+		goto out;
+	}
+
+	can_steal = !skb_frags_readable(skb) && !skb_has_frag_list(skb) &&
+		    start_off == 0 && !frag_skb;
+
+	if (can_steal && !__ptr_ring_full(&ifq->skb_ring) &&
+	    tcp_read_sock_steal_skb(desc, skb, args->sock->sk)) {
+		ret = ptr_ring_produce(&ifq->skb_ring, skb);
+		if (ret) {
+			zcrx_user_ref_frags(ifq, skb, first_frag, i);
+			__kfree_skb(skb);
+		}
+		goto out;
+	}
+	if (!skb_frags_readable(skb))
+		zcrx_user_ref_frags(ifq, skb, first_frag, i);
 
 	skb_walk_frags(skb, frag_iter) {
 		unsigned frag_end;
@@ -1915,7 +1995,7 @@ static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 			unsigned copy = min(frag_end - offset, len);
 			unsigned frag_off = offset - start;
 
-			ret = __zcrx_recv_skb(desc, frag_iter, frag_off, copy);
+			ret = __zcrx_recv_skb(desc, frag_iter, frag_off, copy, true);
 			if (ret < 0)
 				goto out;
 
@@ -1939,7 +2019,7 @@ int io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 {
 	int ret;
 
-	ret = __zcrx_recv_skb(desc, skb, offset, len);
+	ret = __zcrx_recv_skb(desc, skb, offset, len, false);
 	desc->count -= max(0, ret);
 	return ret;
 }
