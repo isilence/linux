@@ -393,9 +393,20 @@ static inline atomic_t *io_get_user_counter(struct net_iov *niov)
 
 static bool io_zcrx_put_niov_uref(struct net_iov *niov, unsigned refs)
 {
-	atomic_t *uref = io_get_user_counter(niov);
+	unsigned *cached_ref = &niov->mp_private;
+	atomic_t *uref;
 	int old;
 
+	lockdep_assert_held(&io_zcrx_iov_to_area(niov)->ifq->rq.lock);
+
+	if (likely(*cached_ref >= refs)) {
+		*cached_ref -= refs;
+		return true;
+	}
+	refs -= *cached_ref;
+	*cached_ref = 0;
+
+	uref = io_get_user_counter(niov);
 	old = atomic_read(uref);
 	do {
 		if (unlikely(old < refs))
@@ -743,6 +754,16 @@ static void io_zcrx_return_niov(struct net_iov *niov)
 static void io_zcrx_scrub_area(struct io_zcrx_ifq *ifq, struct io_zcrx_area *area)
 {
 	int i;
+
+	scoped_guard(spinlock_bh, &ifq->rq.lock) {
+		for (i = 0; i < area->nia.num_niovs; i++) {
+			struct net_iov *niov = &area->nia.niovs[i];
+			unsigned *ref = &niov->mp_private;
+
+			atomic_add(*ref, &area->user_refs[i]);
+			*ref = 0;
+		}
+	}
 
 	/* Reclaim back all buffers given to the user space. */
 	for (i = 0; i < area->nia.num_niovs; i++) {
@@ -1327,9 +1348,9 @@ static void zcrx_release_skbs(struct io_zcrx_ifq *ifq)
 		for (i = 0; i < shi->nr_frags; i++) {
 			const skb_frag_t *frag = &shi->frags[i];
 			struct net_iov *niov = netmem_to_net_iov(frag->netmem);
+			unsigned *ref = &niov->mp_private;
 
-			/* Take niov references the skb holds */
-			io_zcrx_get_niov_uref(niov);
+			*ref += 1;
 		}
 		shi->nr_frags = 0;
 
