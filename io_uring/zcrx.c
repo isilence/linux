@@ -825,6 +825,7 @@ static int zcrx_export(struct io_ring_ctx *ctx, struct io_zcrx_ifq *ifq,
 	if (!mem_is_zero(ce, sizeof(*ce)))
 		return -EINVAL;
 
+	ifq->shared = true;
 	refcount_inc(&ifq->refs);
 	refcount_inc(&ifq->user_refs);
 
@@ -1974,7 +1975,10 @@ static int __zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 
 	if (can_steal && !__ptr_ring_full(&ifq->skb_ring) &&
 	    tcp_read_sock_steal_skb(desc, skb, args->sock->sk)) {
-		ret = ptr_ring_produce(&ifq->skb_ring, skb);
+		if (ifq->shared)
+			ret = ptr_ring_produce(&ifq->skb_ring, skb);
+		else
+			ret = __ptr_ring_produce(&ifq->skb_ring, skb);
 		if (ret) {
 			zcrx_user_ref_frags(ifq, skb, first_frag, i);
 			__kfree_skb(skb);

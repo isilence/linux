@@ -71,6 +71,7 @@ struct io_zcrx_ifq {
 	spinlock_t			alloc_lock ____cacheline_aligned_in_smp;
 
 	struct ptr_ring			skb_ring;
+	bool				shared;
 
 	u32				if_rxq;
 	struct device			*dev;
