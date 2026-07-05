@@ -32,6 +32,7 @@ struct io_zcrx_area {
 	struct net_iov_area	nia;
 	struct io_zcrx_ifq	*ifq;
 	atomic_t		*user_refs;
+	struct net_iov		*tx_niovs;
 
 	bool			is_mapped;
 	u16			area_id;
@@ -96,6 +97,10 @@ int io_zcrx_recv(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 		 unsigned issue_flags, unsigned int *len);
 struct io_mapped_region *io_zcrx_get_region(struct io_ring_ctx *ctx,
 					    unsigned int id);
+
+int io_zcrx_fill_tx_skb(struct sk_buff *skb, struct io_zcrx_ifq *zcrx,
+			 struct iov_iter *from, size_t length);
+
 #else
 static inline int io_register_zcrx(struct io_ring_ctx *ctx,
 				   struct io_uring_zcrx_ifq_reg __user *arg)
@@ -121,6 +126,11 @@ static inline struct io_mapped_region *io_zcrx_get_region(struct io_ring_ctx *ct
 }
 static inline int io_zcrx_ctrl(struct io_ring_ctx *ctx,
 				void __user *arg, unsigned nr_arg)
+{
+	return -EOPNOTSUPP;
+}
+static inline int io_zcrx_fill_tx_skb(struct sk_buff *skb, struct io_zcrx_ifq *zcrx,
+					struct iov_iter *from, size_t length)
 {
 	return -EOPNOTSUPP;
 }

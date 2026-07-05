@@ -9,6 +9,7 @@
 #include <linux/rtnetlink.h>
 #include <linux/skbuff_ref.h>
 #include <linux/anon_inodes.h>
+#include <linux/io_uring/net.h>
 
 #include <net/page_pool/helpers.h>
 #include <net/page_pool/memory_provider.h>
@@ -100,6 +101,8 @@ static int io_populate_area_dma(struct io_zcrx_ifq *ifq,
 
 			if (net_mp_niov_set_dma_addr(niov, dma))
 				return -EFAULT;
+			if (net_mp_niov_set_dma_addr(&area->tx_niovs[niov_idx], dma))
+				return -EFAULT;
 			sg_len -= niov_size;
 			dma += niov_size;
 			niov_idx++;
@@ -118,7 +121,7 @@ static void io_release_dmabuf(struct io_zcrx_mem *mem)
 
 	if (mem->sgt)
 		dma_buf_unmap_attachment_unlocked(mem->attach, mem->sgt,
-						  DMA_FROM_DEVICE);
+						  DMA_BIDIRECTIONAL);
 	if (mem->attach)
 		dma_buf_detach(mem->dmabuf, mem->attach);
 	if (mem->dmabuf)
@@ -162,7 +165,7 @@ static int io_import_dmabuf(struct io_zcrx_ifq *ifq,
 		goto err;
 	}
 
-	mem->sgt = dma_buf_map_attachment_unlocked(mem->attach, DMA_FROM_DEVICE);
+	mem->sgt = dma_buf_map_attachment_unlocked(mem->attach, DMA_BIDIRECTIONAL);
 	if (IS_ERR(mem->sgt)) {
 		ret = PTR_ERR(mem->sgt);
 		mem->sgt = NULL;
@@ -226,7 +229,7 @@ static int io_import_umem(struct io_zcrx_ifq *ifq,
 
 	if (ifq->dev) {
 		ret = dma_map_sgtable(ifq->dev, &mem->page_sg_table,
-				      DMA_FROM_DEVICE, IO_DMA_ATTR);
+				      DMA_BIDIRECTIONAL, IO_DMA_ATTR);
 		if (ret < 0)
 			goto out_err;
 		mapped = true;
@@ -247,7 +250,7 @@ static int io_import_umem(struct io_zcrx_ifq *ifq,
 out_err:
 	if (mapped)
 		dma_unmap_sgtable(ifq->dev, &mem->page_sg_table,
-				  DMA_FROM_DEVICE, IO_DMA_ATTR);
+				  DMA_BIDIRECTIONAL, IO_DMA_ATTR);
 	sg_free_table(&mem->page_sg_table);
 	unpin_user_pages(pages, nr_pages);
 	kvfree(pages);
@@ -310,7 +313,7 @@ static void io_zcrx_unmap_area(struct io_zcrx_ifq *ifq,
 		io_release_dmabuf(&area->mem);
 	} else {
 		dma_unmap_sgtable(ifq->dev, &area->mem.page_sg_table,
-				  DMA_FROM_DEVICE, IO_DMA_ATTR);
+				  DMA_BIDIRECTIONAL, IO_DMA_ATTR);
 	}
 }
 
@@ -494,6 +497,11 @@ static int io_zcrx_create_area(struct io_zcrx_ifq *ifq,
 	if (!area->nia.niovs)
 		goto err;
 
+	area->tx_niovs = kvmalloc_objs(area->tx_niovs[0], nr_iovs,
+					GFP_KERNEL_ACCOUNT | __GFP_ZERO);
+	if (!area->tx_niovs)
+		goto err;
+
 	area->freelist = kvmalloc_array(nr_iovs, sizeof(area->freelist[0]),
 					GFP_KERNEL_ACCOUNT | __GFP_ZERO);
 	if (!area->freelist)
@@ -510,6 +518,7 @@ static int io_zcrx_create_area(struct io_zcrx_ifq *ifq,
 		net_iov_init(niov, &area->nia, NET_IOV_IOURING);
 		area->freelist[i] = i;
 		atomic_set(&area->user_refs[i], 0);
+		net_iov_init(&area->tx_niovs[i], &area->nia, NET_IOV_IOURING);
 	}
 
 	if (ifq->dev) {
@@ -740,6 +749,13 @@ static const struct file_operations zcrx_box_fops = {
 	.owner		= THIS_MODULE,
 	.release	= zcrx_box_release,
 };
+
+void zcrx_ref_niov(struct net_iov *niov)
+{
+	struct io_zcrx_ifq *ifq = io_zcrx_iov_to_area(niov)->ifq;
+
+	percpu_ref_get(&ifq->refs);
+}
 
 static int zcrx_export(struct io_ring_ctx *ctx, struct io_zcrx_ifq *ifq,
 		       struct zcrx_ctrl *ctrl, void __user *arg)
@@ -1816,4 +1832,43 @@ int io_zcrx_recv(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 
 	sock_rps_record_flow(sk);
 	return io_zcrx_tcp_recvmsg(req, ifq, sk, flags, issue_flags, len);
+}
+
+int io_zcrx_fill_tx_skb(struct sk_buff *skb, struct io_zcrx_ifq *zcrx,
+			struct iov_iter *from, size_t length)
+{
+	int i = skb_shinfo(skb)->nr_frags;
+	unsigned niovs_emitted = 0;
+	struct io_zcrx_area *area = zcrx->area;
+	unsigned niov_size = 1U << zcrx->niov_shift;
+
+	if (i && skb_frags_readable(skb))
+		return -EINVAL;
+	length = min(length, iov_iter_count(from));
+
+	while (length) {
+		struct net_iov *niov;
+		size_t offset, size, niov_off;
+
+		if (i == MAX_SKB_FRAGS) {
+			percpu_ref_get_many(&zcrx->refs, niovs_emitted);
+			return -EMSGSIZE;
+		}
+
+		offset = (size_t)iter_iov_addr(from);
+		niov = &area->tx_niovs[offset >> zcrx->niov_shift];
+		niov_off = offset & (niov_size - 1);
+		size = min(length, niov_size - niov_off);
+		size = min(size, iter_iov_len(from));
+
+		skb_add_rx_frag_netmem(skb, i, net_iov_to_netmem(niov), niov_off,
+				       size, size);
+		iov_iter_advance(from, size);
+		length -= size;
+		i++;
+		niovs_emitted++;
+	}
+
+	percpu_ref_get_many(&zcrx->refs, niovs_emitted);
+	return 0;
 }

@@ -92,6 +92,7 @@
 #include <linux/user_namespace.h>
 #include <linux/indirect_call_wrapper.h>
 #include <linux/textsearch.h>
+#include <linux/io_uring/net.h>
 
 #include "dev.h"
 #include "devmem.h"
@@ -7476,6 +7477,8 @@ void __get_netmem(netmem_ref netmem)
 
 	if (net_is_devmem_iov(niov))
 		net_devmem_get_net_iov(netmem_to_net_iov(netmem));
+	else if (niov->type == NET_IOV_IOURING)
+		zcrx_ref_niov(niov);
 }
 EXPORT_SYMBOL(__get_netmem);
 
