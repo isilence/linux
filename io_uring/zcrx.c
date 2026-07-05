@@ -32,6 +32,8 @@
 
 #define IO_DMA_ATTR (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
 
+static void ifq_pcpu_release(struct percpu_ref *ref);
+
 static inline struct io_zcrx_ifq *io_pp_to_ifq(struct page_pool *pp)
 {
 	return pp->mp_priv;
@@ -535,16 +537,22 @@ err:
 static struct io_zcrx_ifq *io_zcrx_ifq_alloc(struct io_ring_ctx *ctx)
 {
 	struct io_zcrx_ifq *ifq;
+	int ret;
 
 	ifq = kzalloc_obj(*ifq);
 	if (!ifq)
 		return NULL;
+	ret = percpu_ref_init(&ifq->refs, ifq_pcpu_release, 0, GFP_KERNEL_ACCOUNT);
+	if (ret) {
+		kfree(ifq);
+		return NULL;
+	}
+	percpu_ref_get(&ifq->refs);
 
 	ifq->if_rxq = -1;
 	spin_lock_init(&ifq->ctx_lock);
 	spin_lock_init(&ifq->rq.lock);
 	mutex_init(&ifq->pp_lock);
-	refcount_set(&ifq->refs, 1);
 	refcount_set(&ifq->user_refs, 1);
 	return ifq;
 }
@@ -606,13 +614,28 @@ static void io_zcrx_ifq_free(struct io_zcrx_ifq *ifq)
 	io_free_rbuf_ring(ifq);
 	free_uid(ifq->user);
 	mutex_destroy(&ifq->pp_lock);
+	percpu_ref_exit(&ifq->refs);
 	kfree(ifq);
+}
+
+static inline void zcrx_release_work(struct work_struct *work)
+{
+	struct io_zcrx_ifq *ifq = container_of(work, struct io_zcrx_ifq, release_work);
+
+	io_zcrx_ifq_free(ifq);
+}
+
+static void ifq_pcpu_release(struct percpu_ref *ref)
+{
+	struct io_zcrx_ifq *ifq = container_of(ref, struct io_zcrx_ifq, refs);
+
+	INIT_WORK(&ifq->release_work, zcrx_release_work);
+	queue_work(system_wq, &ifq->release_work);
 }
 
 static void io_put_zcrx_ifq(struct io_zcrx_ifq *ifq)
 {
-	if (refcount_dec_and_test(&ifq->refs))
-		io_zcrx_ifq_free(ifq);
+	percpu_ref_put(&ifq->refs);
 }
 
 static void io_zcrx_return_niov_freelist(struct net_iov *niov)
@@ -683,6 +706,7 @@ static void zcrx_unregister_user(struct io_zcrx_ifq *ifq, struct io_ring_ctx *ct
 	if (refcount_dec_and_test(&ifq->user_refs)) {
 		io_close_queue(ifq);
 		io_zcrx_scrub(ifq);
+		percpu_ref_kill(&ifq->refs);
 	}
 }
 
@@ -727,7 +751,7 @@ static int zcrx_export(struct io_ring_ctx *ctx, struct io_zcrx_ifq *ifq,
 	if (!mem_is_zero(ce, sizeof(*ce)))
 		return -EINVAL;
 
-	refcount_inc(&ifq->refs);
+	percpu_ref_get(&ifq->refs);
 	refcount_inc(&ifq->user_refs);
 
 	file = anon_inode_create_getfile("[zcrx]", &zcrx_box_fops,
@@ -784,7 +808,7 @@ static int import_zcrx(struct io_ring_ctx *ctx,
 		return -EBADF;
 
 	ifq = file->private_data;
-	refcount_inc(&ifq->refs);
+	percpu_ref_get(&ifq->refs);
 	refcount_inc(&ifq->user_refs);
 
 	scoped_guard(mutex, &ctx->mmap_lock) {
@@ -1285,7 +1309,7 @@ static int io_pp_zc_init(struct page_pool *pp)
 	if (pp->p.dma_dir != DMA_FROM_DEVICE)
 		return -EOPNOTSUPP;
 
-	refcount_inc(&ifq->refs);
+	percpu_ref_get(&ifq->refs);
 	return 0;
 }
 

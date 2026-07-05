@@ -7,6 +7,7 @@
 #include <linux/socket.h>
 #include <net/page_pool/types.h>
 #include <net/net_trackers.h>
+#include <linux/percpu-refcount.h>
 
 #define ZCRX_SUPPORTED_REG_FLAGS	(ZCRX_REG_IMPORT | ZCRX_REG_NODEV)
 #define ZCRX_FEATURES			(ZCRX_FEATURE_RX_PAGE_SIZE |\
@@ -64,7 +65,7 @@ struct io_zcrx_ifq {
 	struct device			*dev;
 	struct net_device		*netdev;
 	netdevice_tracker		netdev_tracker;
-	refcount_t			refs;
+	struct percpu_ref		refs;
 	/* counts userspace facing users like io_uring */
 	refcount_t			user_refs;
 
@@ -81,6 +82,7 @@ struct io_zcrx_ifq {
 	u32				fired_notifs;
 	u64				notif_data;
 	struct zcrx_notif_stats		*notif_stats;
+	struct work_struct		release_work;
 };
 
 #if defined(CONFIG_IO_URING_ZCRX)
