@@ -90,7 +90,7 @@ struct msghdr {
 	unsigned int	msg_flags;	/* flags on received message */
 	__kernel_size_t	msg_controllen;	/* ancillary data buffer length */
 	struct ubuf_info *msg_ubuf;
-	int (*sg_from_iter)(struct sk_buff *skb,
+	int (*sg_from_iter)(struct sk_buff *skb, struct ubuf_info *ubuf,
 			    struct iov_iter *from, size_t length);
 };
 

@@ -116,9 +116,9 @@ struct io_recvzc {
 	struct io_zcrx_ifq		*ifq;
 };
 
-static int io_sg_from_iter_iovec(struct sk_buff *skb,
+static int io_sg_from_iter_iovec(struct sk_buff *skb, struct ubuf_info *ubuf,
 				 struct iov_iter *from, size_t length);
-static int io_sg_from_iter(struct sk_buff *skb,
+static int io_sg_from_iter(struct sk_buff *skb, struct ubuf_info *ubuf,
 			   struct iov_iter *from, size_t length);
 
 int io_shutdown_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
@@ -1447,14 +1447,14 @@ int io_send_zc_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	return 0;
 }
 
-static int io_sg_from_iter_iovec(struct sk_buff *skb,
+static int io_sg_from_iter_iovec(struct sk_buff *skb, struct ubuf_info *ubuf,
 				 struct iov_iter *from, size_t length)
 {
 	skb_zcopy_downgrade_managed(skb);
 	return zerocopy_fill_skb_from_iter(skb, from, length);
 }
 
-static int io_sg_from_iter(struct sk_buff *skb,
+static int io_sg_from_iter(struct sk_buff *skb, struct ubuf_info *ubuf,
 			   struct iov_iter *from, size_t length)
 {
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
