@@ -19,6 +19,7 @@
 #include "rsrc.h"
 #include "memmap.h"
 #include "register.h"
+#include "zcrx.h"
 
 struct io_rsrc_update {
 	struct file			*file;
@@ -881,6 +882,53 @@ bool io_check_coalesce_buffer(struct page **page_array, int nr_pages,
 	return true;
 }
 
+static void io_release_zcrx(void *priv)
+{
+}
+
+static struct io_rsrc_node *io_register_zcrx_buffer(struct io_ring_ctx *ctx,
+						    struct io_uring_regbuf_desc *desc)
+{
+	struct io_mapped_ubuf *imu = NULL;
+	struct io_rsrc_node *node;
+	struct io_zcrx_ifq *zcrx;
+	u32 ifq_idx = desc->uaddr;
+
+
+	if (ifq_idx != desc->uaddr)
+		return ERR_PTR(-EINVAL);
+	node = io_rsrc_node_alloc(ctx, IORING_RSRC_BUFFER);
+	if (!node)
+		return ERR_PTR(-ENOMEM);
+	zcrx = xa_load(&ctx->zcrx_ctxs, ifq_idx);
+	if (!zcrx)
+		return ERR_PTR(-EINVAL);
+
+	WARN_ON_ONCE(!zcrx->area);
+
+	if (zcrx->area->mem.size != desc->size)
+		return ERR_PTR(-EINVAL);
+
+	imu = io_alloc_imu(ctx, 0);
+	if (!imu) {
+		io_cache_free(&ctx->node_cache, node);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	imu->nr_bvecs = 0;
+	/* store original address for later verification */
+	imu->ubuf = 0;
+	imu->len = desc->size;
+	imu->folio_shift = PAGE_SHIFT;
+	imu->release = io_release_zcrx;
+	imu->priv = zcrx;
+	imu->flags = IO_REGBUF_F_UNCLONEABLE | IO_REGBUF_F_ZCRX;
+	imu->dir = IO_IMU_SOURCE;
+	refcount_set(&imu->refs, 1);
+	node->buf = imu;
+	return node;
+}
+
 static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 						   struct io_uring_regbuf_desc *desc)
 {
@@ -898,6 +946,8 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 		return ERR_PTR(-EINVAL);
 	if (!mem_is_zero(&desc->__resv, sizeof(desc->__resv)))
 		return ERR_PTR(-EINVAL);
+	if (desc->type == IO_REGBUF_TYPE_ZCRX)
+		return io_register_zcrx_buffer(ctx, desc);
 
 	if (desc->type == IO_REGBUF_TYPE_EMPTY) {
 		if (uaddr || size)
@@ -1170,9 +1220,17 @@ static int io_import_kbuf(int ddir, struct iov_iter *iter,
 	return 0;
 }
 
+static int io_import_from_zcrx(int ddir, struct iov_iter *iter,
+				struct io_mapped_ubuf *imu,
+				u64 buf_addr, size_t len)
+{
+	iov_iter_ubuf(iter, ddir, (void *)(unsigned long)buf_addr, len);
+	return 0;
+}
+
 static int io_import_fixed(int ddir, struct iov_iter *iter,
 			   struct io_mapped_ubuf *imu,
-			   u64 buf_addr, size_t len)
+			   u64 buf_addr, size_t len, unsigned import_flags)
 {
 	const struct bio_vec *bvec;
 	size_t folio_mask;
@@ -1185,6 +1243,13 @@ static int io_import_fixed(int ddir, struct iov_iter *iter,
 		return ret;
 	if (!(imu->dir & (1 << ddir)))
 		return -EFAULT;
+
+	if (imu->flags & IO_REGBUF_F_ZCRX) {
+		if (unlikely(!(import_flags & IO_REGBUF_IMPORT_ALLOW_ZCRX)))
+			return -EINVAL;
+		return io_import_from_zcrx(ddir, iter, imu, buf_addr, len);
+	}
+
 	if (unlikely(!len)) {
 		iov_iter_bvec(iter, ddir, NULL, 0, 0);
 		return 0;
@@ -1254,7 +1319,7 @@ int __io_import_reg_buf(struct io_kiocb *req, struct iov_iter *iter,
 	node = io_find_buf_node(req, issue_flags);
 	if (!node)
 		return -EFAULT;
-	return io_import_fixed(ddir, iter, node->buf, buf_addr, len);
+	return io_import_fixed(ddir, iter, node->buf, buf_addr, len, import_flags);
 }
 
 static int io_buffer_acct_cloned_hpages(struct io_ring_ctx *ctx,
@@ -1656,6 +1721,22 @@ static int io_kern_bvec_size(struct iovec *iov, unsigned nr_iovs,
 	return 0;
 }
 
+static int import_reg_vec_zcrx(int ddir, struct iov_iter *iter, struct iovec *iov,
+				unsigned nr_iovs)
+{
+	size_t size;
+	unsigned i;
+
+	for (i = 0; i < nr_iovs; i++) {
+		if (check_add_overflow(size, (size_t)iov[i].iov_len, &size))
+			return -EOVERFLOW;
+	}
+	if (size > MAX_RW_COUNT)
+		return -EINVAL;
+	iov_iter_init(iter, ddir, iov, nr_iovs, size);
+	return 0;
+}
+
 int __io_import_reg_vec(int ddir, struct iov_iter *iter,
 			struct io_kiocb *req, struct iou_vec *vec,
 			unsigned nr_iovs, unsigned issue_flags, unsigned import_flags)
@@ -1675,6 +1756,12 @@ int __io_import_reg_vec(int ddir, struct iov_iter *iter,
 
 	iovec_off = vec->nr - nr_iovs;
 	iov = vec->iovec + iovec_off;
+
+	if (imu->flags & IO_REGBUF_F_ZCRX) {
+		if (unlikely(!(import_flags & IO_REGBUF_IMPORT_ALLOW_ZCRX)))
+			return -EINVAL;
+		return import_reg_vec_zcrx(ddir, iter, iov, nr_iovs);
+	}
 
 	if (imu->flags & IO_REGBUF_F_KBUF) {
 		int ret = io_kern_bvec_size(iov, nr_iovs, imu, &nr_segs);

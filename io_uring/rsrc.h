@@ -31,6 +31,11 @@ enum {
 enum {
 	IO_REGBUF_F_KBUF		= 1 << 0,
 	IO_REGBUF_F_UNCLONEABLE		= 1 << 1,
+	IO_REGBUF_F_ZCRX		= 1 << 2,
+};
+
+enum {
+	IO_REGBUF_IMPORT_ALLOW_ZCRX	= 1 << 0,
 };
 
 struct io_mapped_ubuf {
