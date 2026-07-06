@@ -4004,9 +4004,15 @@ static struct sk_buff *validate_xmit_unreadable_skb(struct sk_buff *skb,
 	shinfo = skb_shinfo(skb);
 
 	if (shinfo->nr_frags > 0) {
+		struct net_device *trgt_dev;
+
 		niov = netmem_to_net_iov(skb_frag_netmem(&shinfo->frags[0]));
-		if (net_is_devmem_iov(niov) &&
-		    READ_ONCE(net_devmem_iov_binding(niov)->dev) != dev)
+		if (net_is_devmem_iov(niov))
+			trgt_dev = READ_ONCE(net_devmem_iov_binding(niov)->dev);
+		else
+			trgt_dev = READ_ONCE(net_iov_owner(niov)->netdev);
+
+		if (trgt_dev != dev)
 			goto out_free;
 	}
 

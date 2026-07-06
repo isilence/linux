@@ -516,6 +516,7 @@ static int io_zcrx_create_area(struct io_zcrx_ifq *ifq,
 			goto err;
 	}
 
+	area->nia.netdev = ifq->netdev;
 	area->free_count = nr_iovs;
 	/* we're only supporting one area per ifq for now */
 	area->area_id = 0;
@@ -554,6 +555,7 @@ static void io_zcrx_drop_netdev(struct io_zcrx_ifq *ifq)
 
 	if (!ifq->netdev)
 		return;
+	WRITE_ONCE(ifq->area->nia.netdev, NULL);
 	netdev_put(ifq->netdev, &ifq->netdev_tracker);
 	ifq->netdev = NULL;
 }
@@ -568,6 +570,7 @@ static void io_close_queue(struct io_zcrx_ifq *ifq)
 	};
 
 	scoped_guard(mutex, &ifq->pp_lock) {
+		WRITE_ONCE(ifq->area->nia.netdev, NULL);
 		netdev = ifq->netdev;
 		netdev_tracker = ifq->netdev_tracker;
 		ifq->netdev = NULL;

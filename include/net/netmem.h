@@ -103,6 +103,7 @@ struct net_iov_area {
 	struct net_iov *niovs;
 	size_t num_niovs;
 
+	struct net_device *netdev;
 	/* Offset into the dma-buf where this chunk starts.  */
 	unsigned long base_virtual;
 };
