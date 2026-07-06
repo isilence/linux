@@ -17,7 +17,10 @@ struct io_notif_data {
 	struct io_notif_data	*next;
 	struct io_notif_data	*head;
 
-	unsigned		account_pages;
+	union {
+		unsigned		account_pages;
+		void			*zcrx;
+	};
 	bool			zc_report;
 	bool			zc_used;
 	bool			zc_copied;

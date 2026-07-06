@@ -1497,6 +1497,14 @@ static int io_sg_from_iter(struct sk_buff *skb, struct ubuf_info *ubuf,
 	return ret;
 }
 
+static int io_sg_from_zcrx_iter(struct sk_buff *skb, struct ubuf_info *ubuf,
+				struct iov_iter *from, size_t length)
+{
+	struct io_notif_data *nd = container_of(ubuf, struct io_notif_data, uarg);
+
+	return io_zcrx_fill_tx_skb(skb, nd->zcrx, from, length);
+}
+
 static int io_send_zc_import(struct io_kiocb *req,
 			     struct io_async_msghdr *kmsg,
 			     unsigned int issue_flags)
@@ -1510,15 +1518,17 @@ static int io_send_zc_import(struct io_kiocb *req,
 	notif->buf_index = req->buf_index;
 
 	if (!(sr->flags & IORING_SEND_VECTORIZED)) {
-		ret = io_import_reg_buf(notif, &kmsg->msg.msg_iter,
-					(u64)(uintptr_t)sr->buf, sr->len,
-					ITER_SOURCE, issue_flags);
+		ret = __io_import_reg_buf(notif, &kmsg->msg.msg_iter,
+					  (u64)(uintptr_t)sr->buf, sr->len,
+					  ITER_SOURCE, issue_flags,
+					  IO_REGBUF_IMPORT_ALLOW_ZCRX);
 	} else {
 		unsigned uvec_segs = kmsg->msg.msg_iter.nr_segs;
 
-		ret = io_import_reg_vec(ITER_SOURCE, &kmsg->msg.msg_iter,
+		ret = __io_import_reg_vec(ITER_SOURCE, &kmsg->msg.msg_iter,
 					notif, &kmsg->vec, uvec_segs,
-					issue_flags);
+					issue_flags,
+					IO_REGBUF_IMPORT_ALLOW_ZCRX);
 	}
 
 	if (unlikely(ret))
@@ -1545,9 +1555,18 @@ int io_sendmsg_zc(struct io_kiocb *req, unsigned int issue_flags)
 		return -EAGAIN;
 
 	if (req->flags & REQ_F_IMPORT_BUFFER) {
+		struct io_mapped_ubuf *buf;
+
 		ret = io_send_zc_import(req, kmsg, issue_flags);
 		if (unlikely(ret))
 			return ret;
+
+		buf = sr->notif->buf_node->buf;
+
+		if (buf->flags & IO_REGBUF_TYPE_ZCRX) {
+			kmsg->msg.sg_from_iter = io_sg_from_zcrx_iter;
+			io_notif_to_data(sr->notif)->zcrx = buf->priv;
+		}
 	}
 
 	msg_flags = sr->msg_flags;
