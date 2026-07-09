@@ -95,6 +95,7 @@ enum net_iov_type {
 struct net_iov {
 	struct netmem_desc desc;
 	enum net_iov_type type;
+	unsigned int mp_private;
 	struct net_iov_area *owner;
 };
 
